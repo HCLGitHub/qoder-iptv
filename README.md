@@ -49,7 +49,7 @@ In the browser, M3U/EPG requests may hit CORS limits; the dev server provides a 
 
 ## Install
 - Through [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) / [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) from the webosbrew repository, or
-- Download the IPK from [Releases](https://github.com/HCLGitHub/qoder-iptv-releases/releases) and install it with `ares-install --device tv <file>.ipk`.
+- Download the IPK from [Releases](https://github.com/HCLGitHub/qoder-iptv/releases) and install it with `ares-install --device tv <file>.ipk`.
 
 ## License
 [MIT](LICENSE). Bundled third-party software: hls.js (Apache License 2.0); see [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
@@ -104,7 +104,7 @@ npm run package   # 构建 dist/ 并生成 com.qoder.iptv_<版本>_all.ipk
 
 ### 安装
 - 通过 Homebrew Channel / webOS Dev Manager 从 webosbrew 仓库安装；或
-- 在 [Releases](https://github.com/HCLGitHub/qoder-iptv-releases/releases) 下载 IPK，用 `ares-install --device tv <文件>.ipk` 安装。
+- 在 [Releases](https://github.com/HCLGitHub/qoder-iptv/releases) 下载 IPK，用 `ares-install --device tv <文件>.ipk` 安装。
 
 ### 许可
 [MIT](LICENSE)。随附第三方组件 hls.js（Apache License 2.0），见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
