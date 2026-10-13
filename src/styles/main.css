@@ -1,0 +1,352 @@
+/* ===== 基础 / 10-foot UI ===== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  color: #fff;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+#app { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; transform-origin: top left; }
+.hidden { display: none !important; }
+/* 鼠标：可点击项 */
+.cm-group-item, .cm-channel-item, .cm-date-item, .cm-epg-item, .cm-settings, .eg-day, .eg-chan, .eg-prog,
+.form-row, .btn, .panel-close, .form-row .arrow, .row-del, .row-test, .row-edit { cursor: pointer; }
+
+/* ===== 播放层 ===== */
+#player-layer { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #000; }
+#video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+#video.aspect-fill { object-fit: fill; }
+#video.aspect-43 { object-fit: contain; width: 1440px; margin: 0 240px; }
+
+/* ===== 加载动画 ===== */
+.loading {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.35); z-index: 60;
+  /* 纯提示层，不能拦截鼠标：转圈时仍可点击下面的频道/菜单等 */
+  pointer-events: none;
+}
+.spinner {
+  width: 90px; height: 90px; border: 8px solid rgba(255,255,255,0.2);
+  border-top-color: #3ea6ff; border-radius: 50%; animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== toast ===== */
+.toast {
+  position: absolute; left: 50%; bottom: 140px; transform: translateX(-50%);
+  background: rgba(20,24,30,0.92); color: #fff; padding: 18px 40px; border-radius: 12px;
+  font-size: 30px; z-index: 80; max-width: 1200px; text-align: center;
+}
+
+/* ===== 顶部状态栏 ===== */
+.status-bar {
+  position: absolute; top: 0; left: 0; right: 0; height: 88px; z-index: 40;
+  display: flex; align-items: center; padding: 0 48px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.75), rgba(0,0,0,0));
+  font-size: 30px;
+}
+.status-bar .sb-source { font-weight: 600; color: #3ea6ff; }
+.status-bar .sb-mid { flex: 1; text-align: center; color: #cfd6dd; font-size: 26px; }
+.status-bar .sb-right { display: flex; gap: 32px; align-items: center; color: #cfd6dd; }
+.status-bar .sb-net.online { color: #4caf50; }
+.status-bar .sb-net.offline { color: #ff5252; }
+
+/* ===== 换台 OSD ===== */
+.osd {
+  position: absolute; left: 48px; right: 48px; bottom: 60px; z-index: 45;
+  display: flex; align-items: center; gap: 32px;
+  background: rgba(16,20,26,0.9); border-radius: 18px; padding: 28px 40px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+.osd .osd-logo {
+  width: 120px; height: 120px; border-radius: 12px; background: #0a0d11;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden;
+}
+.osd .osd-logo img { max-width: 100%; max-height: 100%; }
+.osd .osd-num { font-size: 64px; font-weight: 700; color: #3ea6ff; min-width: 110px; }
+.osd .osd-info { flex: 1; min-width: 0; }
+.osd .osd-name { font-size: 44px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 16px; min-width: 0; }
+.osd .osd-cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 画质/音频标签（分辨率、音频编码），信息未到时不占位 */
+.osd .osd-fmt { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.osd .osd-tag {
+  font-size: 22px; font-weight: 700; line-height: 1.2; padding: 5px 13px; border-radius: 6px;
+  color: #3ea6ff; border: 2px solid rgba(62,166,255,0.55); background: rgba(62,166,255,0.12);
+}
+.osd .osd-tag.tag-4k { color: #ffcc4d; border-color: rgba(255,204,77,0.6); background: rgba(255,204,77,0.12); }
+.osd .osd-tag.tag-video { color: #c792ea; border-color: rgba(199,146,234,0.55); background: rgba(199,146,234,0.12); }
+.osd .osd-tag.tag-audio { color: #8fd14f; border-color: rgba(143,209,79,0.5); background: rgba(143,209,79,0.12); }
+.osd .osd-tag.tag-latency { color: #ff9e64; border-color: rgba(255,158,100,0.55); background: rgba(255,158,100,0.12); }
+.osd .osd-lat { display: flex; align-items: center; }
+.osd .osd-prog { font-size: 28px; color: #b9c2cc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.osd .osd-next { font-size: 24px; color: #808a94; margin-top: 6px; }
+.osd .osd-src { font-size: 24px; color: #3ea6ff; margin-top: 8px; font-weight: 600; }
+.osd .osd-time { font-size: 40px; color: #eaeef2; font-weight: 600; }
+.osd .osd-progress { height: 8px; background: rgba(255,255,255,0.15); border-radius: 4px; margin-top: 14px; overflow: hidden; }
+.osd .osd-progress > i { display: block; height: 100%; background: #3ea6ff; }
+.osd .osd-badge { font-size: 24px; padding: 6px 16px; border-radius: 8px; background: #b8860b; color:#fff; }
+
+/* ===== 跨分组换台提示（浮在 OSD 上方，避免与之重叠） ===== */
+.group-hint {
+  position: absolute; left: 48px; bottom: 268px; z-index: 46;
+  display: flex; align-items: center; gap: 14px;
+  background: rgba(16,20,26,0.9); border-left: 6px solid #3ea6ff; border-radius: 10px;
+  padding: 14px 32px; font-size: 34px; font-weight: 700; color: #fff;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  zoom: var(--ui-zoom, 1);
+}
+.group-hint .gh-label { font-size: 26px; color: #808a94; font-weight: 500; }
+
+/* ===== 回看控制条：进度条 ===== */
+.catchup-bar {
+  position: absolute; left: 60px; right: 60px; bottom: 56px; z-index: 46;
+  background: rgba(16,20,26,0.92); border-radius: 20px; padding: 24px 40px 28px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+  zoom: var(--ui-zoom, 1);
+}
+.catchup-bar .cb-title {
+  font-size: 30px; font-weight: 700; color: #eaeef2; margin-bottom: 18px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.catchup-bar .cb-progress-row {
+  display: flex; align-items: center; gap: 24px; padding: 10px 14px; border-radius: 12px;
+}
+.catchup-bar .cb-progress-row.focused { background: rgba(62,166,255,0.14); }
+.catchup-bar .cb-cur, .catchup-bar .cb-dur {
+  font-size: 30px; color: #eaeef2; font-weight: 600; min-width: 120px;
+}
+.catchup-bar .cb-dur { text-align: right; }
+.catchup-bar .cb-bar {
+  position: relative; flex: 1; height: 12px; border-radius: 6px;
+  background: rgba(255,255,255,0.16);
+}
+.catchup-bar .cb-fill {
+  display: block; height: 100%; border-radius: 6px; background: #3ea6ff;
+}
+.catchup-bar .cb-knob {
+  position: absolute; top: 50%; width: 26px; height: 26px; border-radius: 50%;
+  background: #fff; transform: translate(-50%, -50%); box-shadow: 0 0 0 4px rgba(62,166,255,0.5);
+}
+.catchup-bar .cb-progress-row.focused .cb-bar { height: 16px; }
+.catchup-bar .cb-progress-row.focused .cb-knob { width: 32px; height: 32px; }
+/* 长按快进中：当前时间高亮，提示尚未提交的预览位置 */
+.catchup-bar .cb-cur.seeking { color: #ffcc44; }
+
+/* ===== 右下角网速 ===== */
+/* 贴在 OSD/回看条（bottom:56~60px）下方，两者同时显示也不遮挡 */
+.net-speed {
+  position: absolute; right: 60px; bottom: 12px; z-index: 47;
+  background: rgba(16,20,26,0.72); border-radius: 10px;
+  padding: 6px 18px; font-size: 26px; font-weight: 700; color: #9fb3c8;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  zoom: var(--ui-zoom, 1);
+}
+/* 起播耗时分解（临时诊断）：比主行小、暗一档 */
+.net-speed .net-phase { font-size: 18px; font-weight: 600; color: #6b7c8f; margin-top: 2px; }
+/* 预热未命中归因（临时诊断）：跟分解行同样大小，换个警示色区分开 */
+.net-speed .net-warm { font-size: 18px; font-weight: 600; color: #d8a24a; margin-top: 2px; }
+
+/* ===== 数字换台缓冲 ===== */
+.channel-input {
+  position: absolute; top: 120px; right: 60px; z-index: 55;
+  background: rgba(16,20,26,0.95); border: 3px solid #3ea6ff; border-radius: 14px;
+  padding: 18px 44px; font-size: 88px; font-weight: 800; letter-spacing: 8px; color: #3ea6ff;
+}
+
+/* ===== 通用浮层 ===== */
+.overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 50; zoom: var(--ui-zoom, 1); }
+.osd, .channel-input, .toast { zoom: var(--ui-zoom, 1); }
+
+/* ===== 退出确认对话框 ===== */
+#exit-dialog { z-index: 70; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; }
+.exit-box {
+  width: 760px; background: rgba(16,20,26,0.98); border-radius: 20px; padding: 56px 48px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6); text-align: center;
+}
+.exit-box .exit-title { font-size: 42px; color: #fff; margin-bottom: 14px; }
+.exit-box .exit-sub { font-size: 28px; color: #808a94; margin-bottom: 46px; }
+.exit-box .exit-btns { display: flex; gap: 28px; justify-content: center; }
+.exit-btn {
+  min-width: 240px; padding: 24px 0; border-radius: 14px; font-size: 34px; font-weight: 600;
+  color: #d3dae1; background: rgba(255,255,255,0.08); cursor: pointer;
+}
+.exit-btn.focused { background: #3ea6ff; color: #fff; }
+.exit-btn.danger.focused { background: #ff5252; color: #fff; }
+
+/* ===== 四栏频道菜单 ===== */
+#channel-menu {
+  display: flex; height: 100%;
+  background: linear-gradient(to right, rgba(8,10,14,0.96) 0%, rgba(8,10,14,0.9) 60%, rgba(8,10,14,0.6) 100%);
+  backdrop-filter: blur(8px);
+}
+.cm-col { height: 100%; overflow: hidden; display: flex; flex-direction: column; }
+.cm-groups { width: 300px; background: rgba(0,0,0,0.35); }
+.cm-channels { width: 620px; background: rgba(0,0,0,0.25); }
+.cm-dates { width: 210px; background: rgba(0,0,0,0.18); }
+.cm-epg { flex: 1; background: rgba(0,0,0,0.1); }
+.cm-col .cm-title { font-size: 28px; color: #808a94; padding: 24px 32px 12px; letter-spacing: 2px; }
+.cm-list { flex: 1; overflow-y: auto; padding: 0 12px 24px; }
+.cm-list::-webkit-scrollbar { width: 0; }
+
+.cm-date-item {
+  font-size: 30px; padding: 18px 22px; border-radius: 12px; color: #d3dae1; white-space: nowrap;
+}
+.cm-date-item.active { color: #3ea6ff; }
+.cm-date-item.focused { background: #3ea6ff; color: #fff; }
+
+.cm-group-item {
+  font-size: 34px; padding: 20px 24px; border-radius: 12px; color: #d3dae1;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.cm-group-item .badge { font-size: 24px; color: #808a94; }
+.cm-group-item.focused { background: #3ea6ff; color: #fff; }
+.cm-group-item.active { color: #3ea6ff; }
+.cm-group-item.focused.active { color: #fff; }
+
+/* 分组栏左下角「设置」入口 */
+.cm-settings {
+  flex-shrink: 0; margin: 8px 12px 16px; padding: 20px 24px; border-radius: 12px;
+  font-size: 32px; color: #d3dae1; display: flex; align-items: center; gap: 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.cm-settings .ico { font-size: 34px; }
+.cm-settings.focused { background: #3ea6ff; color: #fff; }
+
+.cm-channel-item {
+  display: flex; align-items: center; gap: 20px; padding: 16px 20px; border-radius: 12px;
+}
+.cm-channel-item .num { width: 78px; font-size: 34px; font-weight: 700; color: #808a94; text-align: right; }
+.cm-channel-item .logo {
+  width: 84px; height: 60px; flex-shrink: 0; background: #0a0d11; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.cm-channel-item .logo img { max-width: 100%; max-height: 100%; }
+.cm-channel-item .meta { flex: 1; min-width: 0; }
+.cm-channel-item .name { font-size: 32px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-channel-item .now { font-size: 24px; color: #808a94; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-channel-item .fav { color: #ffb300; font-size: 30px; }
+.cm-channel-item .src-badge { display: inline-block; font-size: 20px; color: #3ea6ff; border: 1px solid #3ea6ff; border-radius: 6px; padding: 0 8px; margin-left: 6px; vertical-align: middle; }
+.cm-channel-item.focused { background: #3ea6ff; }
+.cm-channel-item.focused .num, .cm-channel-item.focused .now { color: #eaf4ff; }
+/* 「节目单/回看 ›」入口：遥控焦点行常显；鼠标 hover 任意行也显示，点它展开日期+节目单栏
+   （点整行是直接播直播，两者要分得开，所以做成独立小按钮而不是整行响应）*/
+.cm-chan-hint {
+  display: none; flex-shrink: 0; font-size: 24px; font-weight: 600; white-space: nowrap;
+  color: #eaf4ff; padding: 6px 14px; border-radius: 8px;
+}
+.cm-channel-item.focused .cm-chan-hint,
+.cm-channel-item:hover .cm-chan-hint { display: block; }
+.cm-channel-item:not(.focused) .cm-chan-hint { color: #3ea6ff; border: 1px solid rgba(62,166,255,0.5); }
+.cm-chan-hint:hover { background: rgba(62,166,255,0.28); color: #fff; }
+.cm-channel-item.playing .name { color: #3ea6ff; }
+.cm-channel-item.focused.playing .name { color: #fff; }
+
+.cm-epg-item { padding: 18px 28px; border-radius: 10px; display: flex; gap: 20px; align-items: baseline; }
+.cm-epg-item .t { font-size: 28px; color: #808a94; width: 120px; flex-shrink: 0; }
+.cm-epg-item .p { font-size: 30px; color: #d3dae1; flex: 1; }
+.cm-epg-item .catchup { font-size: 22px; color: #4caf50; }
+.cm-epg-item.now { background: rgba(62,166,255,0.15); }
+.cm-epg-item.now .p { color: #3ea6ff; font-weight: 700; }
+.cm-epg-item.focused { background: #3ea6ff; }
+.cm-epg-item.focused .t, .cm-epg-item.focused .p, .cm-epg-item.focused .catchup { color: #fff; }
+
+/* ===== 全屏 EPG 指南 ===== */
+#epg-guide { background: rgba(8,10,14,0.97); display: flex; flex-direction: column; }
+.eg-head { display: flex; align-items: center; gap: 40px; padding: 30px 48px; }
+.eg-head .eg-title { font-size: 40px; font-weight: 700; }
+.eg-days { display: flex; gap: 14px; flex: 1; overflow: hidden; }
+.eg-day { font-size: 28px; padding: 12px 24px; border-radius: 10px; color: #b9c2cc; white-space: nowrap; }
+.eg-day.focused { background: #3ea6ff; color: #fff; }
+.eg-day.active { color: #3ea6ff; }
+.eg-body { flex: 1; display: flex; overflow: hidden; padding: 0 48px 40px; gap: 24px; }
+.eg-chan-col { width: 420px; overflow-y: auto; }
+.eg-prog-col { flex: 1; overflow-y: auto; }
+.eg-chan { font-size: 30px; padding: 16px 20px; border-radius: 10px; color: #d3dae1; }
+.eg-chan.focused { background: rgba(62,166,255,0.3); }
+.eg-chan.active { color: #3ea6ff; font-weight: 700; }
+.eg-prog { font-size: 28px; padding: 16px 20px; border-radius: 10px; display: flex; gap: 20px; }
+.eg-prog .t { color: #808a94; width: 160px; flex-shrink: 0; }
+.eg-prog .catchup { color: #4caf50; font-size: 22px; }
+.eg-prog.now { background: rgba(62,166,255,0.12); }
+.eg-prog.focused { background: #3ea6ff; color: #fff; }
+.eg-prog.focused .t, .eg-prog.focused .catchup { color: #fff; }
+
+/* ===== 设置 / 源管理 通用 ===== */
+.panel {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 1360px; max-height: 960px; background: rgba(16,20,26,0.98); border-radius: 20px;
+  padding: 48px; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  display: flex; flex-direction: column;
+}
+/* 源列表：源多了单独滚动，表头/输入框/关闭按钮保持固定不被挤出屏幕（单位用 px，因为 #app 是 1920×1080 缩放坐标系，vh/vw 会指向真实屏幕而错位） */
+.src-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.panel h2 { font-size: 44px; margin-bottom: 32px; }
+/* 面板右上角关闭按钮（鼠标用户没有返回键） */
+.panel-close {
+  position: absolute; top: 22px; right: 26px; width: 58px; height: 58px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 34px; color: #b9c2cc; border-radius: 50%; background: rgba(255,255,255,0.08);
+}
+.panel-close:hover { background: #ff5252; color: #fff; }
+.form-row { display: flex; align-items: center; padding: 22px 28px; border-radius: 12px; font-size: 32px; gap: 20px; }
+.form-row .label { flex: 1; color: #d3dae1; }
+.form-row .value { color: #3ea6ff; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 760px; }
+.form-row.focused { background: #3ea6ff; }
+.form-row.focused .label, .form-row.focused .value { color: #fff; }
+.form-row .value.off { color: #808a94; }
+.form-row.focused .value.off { color: #e6eaf0; }
+/* 鼠标悬停反馈（不改键盘焦点，避免高亮跳动） */
+.form-row:hover { background: rgba(62,166,255,0.2); }
+.form-row.focused:hover { background: #3ea6ff; }
+.form-row .arrow { display: inline-block; padding: 0 16px; font-weight: 700; }
+.form-row .arrow:hover { color: #fff; text-shadow: 0 0 14px rgba(62,166,255,0.95); }
+.row-del {
+  font-size: 24px; color: #ff6b6b; padding: 6px 16px; border-radius: 8px;
+  border: 2px solid rgba(255,107,107,0.45); white-space: nowrap;
+}
+.row-del:hover { background: #ff5252; color: #fff; border-color: #ff5252; }
+.form-row.focused .row-del { color: #fff; border-color: rgba(255,255,255,0.6); }
+.row-test {
+  font-size: 24px; color: #4fd08a; padding: 6px 16px; border-radius: 8px;
+  border: 2px solid rgba(79,208,138,0.45); white-space: nowrap;
+}
+.row-test:hover { background: #35c47b; color: #fff; border-color: #35c47b; }
+.form-row.focused .row-test { color: #fff; border-color: rgba(255,255,255,0.6); }
+.row-edit {
+  font-size: 24px; color: #7fd6ff; padding: 6px 16px; border-radius: 8px;
+  border: 2px solid rgba(127,214,255,0.45); white-space: nowrap;
+}
+.row-edit:hover { background: #3aa0d8; color: #fff; border-color: #3aa0d8; }
+.form-row.focused .row-edit { color: #fff; border-color: rgba(255,255,255,0.6); }
+.form-row input {
+  background: #0a0d11; border: 2px solid #333; border-radius: 8px; color: #fff;
+  font-size: 30px; padding: 10px 16px; width: 520px;
+}
+.hint { font-size: 24px; color: #808a94; margin-top: 20px; line-height: 1.6; }
+
+/* ===== 设备信息面板 ===== */
+/* 这个面板的行数是浮动的：取 MAC / 取系统信息失败时会多出错误行，展开「原始返回」
+   还会追加整段探测日志。行一多就把按钮行和提示顶到 1080 之外——按钮看不见就等于
+   按不到，面板也就没用了。
+   所以只让中间的信息区滚动，标题 / 按钮行 / 提示固定不动。
+   上下键滚这块区域（见 DeviceInfo.handleKey），电视上没有滚轮，不给键就滚不动。 */
+#device-info .panel { max-height: 1000px; padding: 36px 48px; }
+#device-info .panel h2 { margin-bottom: 18px; }
+#device-info .di-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+/* 信息行比设置菜单里的行更密：这里是一屏只读参数，不是逐行操作的菜单，
+   不需要那么大的行高，压紧后常见情况（不展开日志）能一屏放完不用滚。 */
+#device-info .di-body .form-row { padding: 10px 28px; font-size: 28px; }
+/* 长说明独立滚动，不能把参数列表和底部按钮挤出电视画面。 */
+.tune-desc { height: 112px; flex: 0 0 112px; overflow-y: auto; color: #b9c2cc; }
+.tune-warm-status { flex-shrink: 0; color: #4fd08a; }
+.btn-row { display: flex; gap: 20px; margin-top: 32px; }
+.btn { font-size: 32px; padding: 18px 36px; border-radius: 12px; background: #23303c; color: #fff; }
+.btn.focused { background: #3ea6ff; }
+.btn:hover { background: #3ea6ff; }
+.empty-tip {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  text-align: center; font-size: 40px; color: #b9c2cc; line-height: 1.8;
+}
