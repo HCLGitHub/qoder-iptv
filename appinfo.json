@@ -1,0 +1,20 @@
+{
+  "id": "com.qoder.iptv",
+  "version": "1.1.44",
+  "vendor": "Qoder",
+  "type": "web",
+  "main": "index.html",
+  "title": "IPTV 直播",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "iconColor": "#615fd1",
+  "bgColor": "#000000",
+  "appDescription": "M3U 媒体播放器，开源免费，不含频道或节目内容，播放源与 EPG 由用户提供",
+  "resolution": "3840x2160",
+  "disableBackHistoryAPI": true,
+  "supportPortraitMode": false,
+  "requiredPermissions": [
+    "time.query",
+    "network.query"
+  ]
+}

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>IPTV 直播</title>
+  <link rel="stylesheet" href="./src/styles/main.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 播放层：全屏视频 -->
+    <div id="player-layer">
+      <video id="video" playsinline preload="auto"></video>
+    </div>
+
+    <!-- 换台 OSD 信息条 -->
+    <div id="osd" class="osd hidden"></div>
+
+    <!-- 跨分组换台提示（显示在 OSD 上方） -->
+    <div id="group-hint" class="group-hint hidden"></div>
+
+    <!-- 回看控制条：进度条 -->
+    <div id="catchup-bar" class="catchup-bar hidden"></div>
+
+    <!-- 数字换台缓冲 -->
+    <div id="channel-input" class="channel-input hidden"></div>
+
+    <!-- 右下角网速（设置里开启后常驻） -->
+    <div id="net-speed" class="net-speed hidden"></div>
+
+    <!-- 顶部状态栏 -->
+    <div id="status-bar" class="status-bar hidden"></div>
+
+    <!-- 三栏呼出菜单 -->
+    <div id="channel-menu" class="overlay hidden"></div>
+
+    <!-- 全屏 EPG 节目指南 -->
+    <div id="epg-guide" class="overlay hidden"></div>
+
+    <!-- 设置菜单 -->
+    <div id="settings" class="overlay hidden"></div>
+
+    <!-- 源管理 -->
+    <div id="source-manager" class="overlay hidden"></div>
+
+    <!-- 分组显示管理 -->
+    <div id="group-manager" class="overlay hidden"></div>
+
+    <!-- 播放器参数（真机调优） -->
+    <div id="player-tuning" class="overlay hidden"></div>
+
+    <!-- 设备信息 -->
+    <div id="device-info" class="overlay hidden"></div>
+
+    <!-- 退出确认对话框 -->
+    <div id="exit-dialog" class="overlay hidden"></div>
+
+    <!-- 全局提示 toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- 加载中 -->
+    <div id="loading" class="loading hidden"><div class="spinner"></div></div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
