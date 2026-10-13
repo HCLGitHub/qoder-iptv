@@ -6,6 +6,13 @@ An open-source M3U / IPTV player for LG webOS TVs (webOS 5.3+, tested on webOS 6
 
 **No channels, playlists, programmes or EPG data are included.** You add your own M3U playlist and XMLTV/DIYP EPG sources. Only use content you are legally entitled to access. The app does not bypass accounts, authentication or DRM.
 
+## Screenshots
+| Channel menu with EPG and catch-up | Settings | Playback info bar |
+| --- | --- | --- |
+| ![Channel menu](docs/screenshots/channels-epg.png) | ![Settings](docs/screenshots/settings.png) | ![Playback](docs/screenshots/playback-osd.png) |
+
+Demo video recorded on a real LG TV: [docs/demo.mp4](docs/demo.mp4)
+
 ## Features
 - Multiple M3U/M3U8 sources: add, edit, switch, delete; channels merged by group and name
 - Four-column channel menu: groups, channels (logo, number, now playing), programmes, dates
@@ -54,6 +61,13 @@ In the browser, M3U/EPG requests may hit CORS limits; the dev server provides a 
 运行在 LG webOS 电视（webOS 5.3+，主要在 webOS 6 及以上测试）上的开源 M3U / IPTV 播放器，基于 Vite 与 hls.js。
 
 **本应用不包含任何频道、播放列表、节目或 EPG 数据**，M3U 与 EPG 均由用户自行添加。请只使用你有合法权利访问的内容；本应用不绕过账号、鉴权或 DRM。
+
+### 截图
+| 频道菜单（EPG / 回看） | 设置 | 播放信息条 |
+| --- | --- | --- |
+| ![频道菜单](docs/screenshots/channels-epg.png) | ![设置](docs/screenshots/settings.png) | ![播放](docs/screenshots/playback-osd.png) |
+
+真机演示视频：[docs/demo.mp4](docs/demo.mp4)
 
 ### 功能
 - 多个 M3U/M3U8 源的添加、编辑、切换、删除，按分组 + 名称合并频道
