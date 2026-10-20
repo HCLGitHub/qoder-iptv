@@ -1030,3 +1030,4 @@ window.addEventListener('online', () => {
   }
 });
 boot();
+if (window.__bootDone) window.__bootDone();
