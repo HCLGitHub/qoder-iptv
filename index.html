@@ -61,6 +61,68 @@
     <!-- 加载中 -->
     <div id="loading" class="loading hidden"><div class="spinner"></div></div>
   </div>
+
+  <!-- 启动诊断层：内联样式 + ES5 普通脚本，主程序（module）加载失败时也能显示，避免纯黑屏 -->
+  <div id="boot-diag" style="position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;pointer-events:none;color:#fff;font-family:sans-serif;">
+    <div id="boot-diag-box" style="position:absolute;left:4%;top:6%;max-width:88%;background:rgba(0,0,0,0.8);border-radius:8px;white-space:pre-wrap;word-break:break-all;line-height:1.5;"></div>
+  </div>
+  <script>
+    (function () {
+      var root = document.getElementById('boot-diag');
+      var box = document.getElementById('boot-diag-box');
+      var lines = [];
+      var errors = 0;
+      var started = false;
+      function size() {
+        var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080) || 1;
+        box.style.fontSize = Math.max(14, Math.round(26 * s)) + 'px';
+        box.style.padding = Math.round(20 * s) + 'px ' + Math.round(28 * s) + 'px';
+      }
+      function add(text) {
+        lines.push(text);
+        box.textContent = lines.join('\n');
+      }
+      function remove() {
+        window.removeEventListener('resize', size);
+        if (root.parentNode) root.parentNode.removeChild(root);
+      }
+      var m = /Chrom(?:e|ium)\/([\d.]+)/.exec(navigator.userAgent);
+      var env = 'Chromium ' + (m ? m[1] : '?') + ' | ' + location.protocol +
+        ' | module: ' + ('noModule' in document.createElement('script') ? 'yes' : 'no');
+      size();
+      window.addEventListener('resize', size);
+      add('Loading... / 正在加载...');
+      add(env);
+      window.addEventListener('error', function (e) {
+        if (started) return;
+        errors++;
+        var t = e.target;
+        if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+          add('Failed to load / 加载失败: ' + (t.src || t.href));
+        } else {
+          var where = e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno + ':' + e.colno : '';
+          add('Error / 错误: ' + (e.message || e.error) + where);
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        if (started) return;
+        errors++;
+        var r = e.reason;
+        add('Unhandled rejection / 未处理异常: ' + (r && (r.stack || r.message) || r));
+      });
+      window.__bootDone = function () {
+        started = true;
+        if (errors) setTimeout(remove, 10000);
+        else remove();
+      };
+      setTimeout(function () {
+        if (started) return;
+        add('Main script did not start within 10s / 主程序 10 秒内未启动');
+        add('Please take a photo of this screen and send it to the developer.');
+        add('请拍下此屏幕发给开发者。');
+      }, 10000);
+    })();
+  </script>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>
