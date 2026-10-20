@@ -1,6 +1,6 @@
 {
   "name": "webos-iptv-player",
-  "version": "1.1.45",
+  "version": "1.1.47",
   "description": "Open-source M3U/IPTV player for LG webOS TV",
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "build": "vite build",
     "preview": "vite preview --port 5174",
     "package": "npm run build && ares-package dist -o .",
-    "install-tv": "ares-install --device tv ./com.qoder.iptv_1.1.45_all.ipk",
+    "install-tv": "ares-install --device tv ./com.qoder.iptv_1.1.47_all.ipk",
     "launch-tv": "ares-launch --device tv com.qoder.iptv",
     "test": "node --test scripts/test-i18n.mjs scripts/test-epg-store.mjs scripts/test-range-load.mjs scripts/test-source-manager.mjs scripts/test-startup.mjs scripts/test-warm-gate.mjs scripts/test-dev-proxy.mjs"
   },

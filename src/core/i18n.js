@@ -118,8 +118,10 @@ const DICT = {
     'sm.epgPlaceholder': '留空则用 M3U 内地址，都没有时用内置 EPG',
     'sm.save': '＋ 保存并使用',
     'sm.saved': '已保存的源',
+    'sm.navigateHint': '上下选择名称 / M3U / EPG / 保存，OK 开始输入；EPG 可留空。',
+    'sm.inputHint': '正在输入：{field} · 方向键选字，OK 确认字符；键盘回车到下一项，返回结束输入。',
     'sm.hint':
-      '上下移动焦点，OK 编辑输入框/使用该源，绿色键编辑选中的源，蓝色键删除选中的源，返回键关闭。<br>鼠标：点行使用，点行尾 ✎ 编辑、⟳ 测试剔除不可播频道、✕ 删除，点面板外或右上角 ✕ 关闭。',
+      '收起键盘后，上下可往返修改任意输入项，OK 重新输入；到保存按钮后按 OK 保存。绿色键编辑，蓝色键删除，非输入时返回关闭。<br>鼠标：点行使用，点 ✎ 编辑、⟳ 测试、✕ 删除，点面板外或右上角 ✕ 关闭。',
     'sm.unnamed': '未命名源',
     'sm.pulling': '正在拉取源…',
     'sm.testingProgress': '测试中 {done}/{total}…',
@@ -424,8 +426,10 @@ const DICT = {
     'sm.epgPlaceholder': 'Leave blank to use the URL in M3U, or built-in EPG',
     'sm.save': '＋ Save & Use',
     'sm.saved': 'Saved Sources',
+    'sm.navigateHint': 'Up/Down: Name / M3U / EPG / Save. OK starts typing. EPG is optional.',
+    'sm.inputHint': 'Typing: {field} · Arrows select keys, OK types a character. Keyboard Enter: next field. Back: finish typing.',
     'sm.hint':
-      'Up/Down to move focus, OK to edit input/use the source, Green key to edit selected source, Blue key to delete, Back to close.<br>Mouse: click a row to use, click ✎ to edit, ⟳ to test and drop dead channels, ✕ to delete, click outside or ✕ to close.',
+      'After closing the keyboard, use Up/Down to revisit any field and OK to edit. Press OK on Save to save. Green to edit, Blue to delete, Back outside input to close.<br>Mouse: click a row to use, ✎ to edit, ⟳ to test, ✕ to delete, outside or top-right ✕ to close.',
     'sm.unnamed': 'Unnamed Source',
     'sm.pulling': 'Fetching source…',
     'sm.testingProgress': 'Testing {done}/{total}…',

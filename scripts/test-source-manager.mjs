@@ -94,6 +94,12 @@ function fixture(t, sources = [SOURCE], activeId = SOURCE.id) {
   const renders = [];
   const time = clock();
   const classes = new Set(['hidden']);
+  const listeners = new Map();
+  const document = {
+    activeElement: null,
+    addEventListener(name, fn) { listeners.set(name, fn); },
+    emit(name, event) { listeners.get(name)?.(event); }
+  };
   let fetchImpl = () => { throw new Error('Unexpected mock request; real network is forbidden'); };
   const el = {
     addEventListener() {},
@@ -112,7 +118,7 @@ function fixture(t, sources = [SOURCE], activeId = SOURCE.id) {
     }
   }
   const api = vm.runInNewContext(executable + '\n;({ SourceManager, probeUrl });', {
-    KEY, esc, parseM3U, URL, TextDecoder, AbortController: TestController,
+    KEY, esc, parseM3U, URL, TextDecoder, AbortController: TestController, document,
     setTimeout: time.setTimeout, clearTimeout: time.clearTimeout,
     t: (key, params) => key + (params ? ' ' + JSON.stringify(params) : ''),
     getSources: () => copy(stored),
@@ -136,11 +142,57 @@ function fixture(t, sources = [SOURCE], activeId = SOURCE.id) {
     assert.equal(time.timers.size, 0, 'all request timers must be released');
   });
   return {
-    api, manager, calls, saves, reloads, progress, renders, time,
+    api, manager, calls, saves, reloads, progress, renders, time, el, document,
     fetch: (fn) => { fetchImpl = fn; },
     stored: () => copy(stored),
     replaceStored: (list) => { stored = copy(list); }
   };
+}
+
+function inputFixture(t, sources = []) {
+  const f = fixture(t, sources);
+  let inputs = new Map();
+  let rows = [];
+  Object.defineProperty(f.el, 'innerHTML', {
+    set(html) {
+      f.renders.push(html);
+      f.document.activeElement = null;
+      rows = Array.from({ length: 4 + f.manager.sources.length }, (_, idx) => {
+        const classes = new Set(idx === f.manager.focusIdx ? ['focused'] : []);
+        const row = {
+          dataset: { role: 'row', idx: String(idx) },
+          classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name) },
+          closest: () => row
+        };
+        return row;
+      });
+      inputs = new Map([...html.matchAll(/<input id="([^"]+)"[^>]*value="([^"]*)"/g)].map(([_, id, value], idx) => {
+        const input = {
+          id, value,
+          selectionStart: 0, selectionEnd: 0,
+          closest: (selector) => selector === '.panel' ? f.el : rows[idx],
+          focus() {
+            if (f.document.activeElement === input) return;
+            f.document.activeElement?.blur();
+            f.document.activeElement = input;
+            input.onfocus?.();
+          },
+          blur() {
+            if (f.document.activeElement !== input) return;
+            f.document.activeElement = null;
+            input.onblur?.();
+          },
+          setSelectionRange(start, end) { input.selectionStart = start; input.selectionEnd = end; }
+        };
+        return [id, input];
+      }));
+    }
+  });
+  f.el.querySelector = (selector) => selector === '.focused'
+    ? rows.find((row) => row.classList.contains('focused'))
+    : inputs.get(selector.slice(1)) || null;
+  f.manager.render();
+  return { ...f, input: (id) => inputs.get(id) };
 }
 
 function serveOne(f, video = () => response('', { type: 'video/mp2t' })) {
@@ -148,6 +200,239 @@ function serveOne(f, video = () => response('', { type: 'video/mp2t' })) {
     ? response(playlist([channelUrl(0)]))
     : video(request));
 }
+
+test('clicking and re-clicking a source input preserves its node and caret', (t) => {
+  const f = inputFixture(t);
+  const input = f.input('src-name');
+  const renders = f.renders.length;
+  f.manager._onClick({ target: input });
+  assert.equal(f.input('src-name'), input);
+  assert.equal(f.document.activeElement, input);
+  assert.equal(f.manager.editingInput, true);
+  input.value = 'Test source';
+  input.oninput();
+  input.setSelectionRange(2, 4);
+  f.manager._onClick({ target: input });
+  assert.equal(f.renders.length, renders);
+  assert.equal(input.selectionStart, 2);
+  assert.equal(input.selectionEnd, 4);
+  assert.equal(f.manager.form.name, 'Test source');
+});
+
+test('native focus and blur synchronize field selection without rebuilding the form', (t) => {
+  const f = inputFixture(t);
+  const renders = f.renders.length;
+  for (const [idx, id, key, value] of [
+    [0, 'src-name', 'name', '中文 source'],
+    [1, 'src-m3u', 'm3uUrl', 'https://source.test/list.m3u'],
+    [2, 'src-epg', 'epgUrl', 'https://epg.test/guide.xml']
+  ]) {
+    const input = f.input(id);
+    input.focus();
+    assert.equal(f.manager.focusIdx, idx);
+    assert.equal(f.manager.editingInput, true);
+    assert.equal(f.el.querySelector('.focused').dataset.idx, String(idx));
+    input.value = value;
+    input.oninput();
+    assert.equal(f.manager.form[key], value);
+  }
+  assert.equal(f.renders.length, renders);
+  f.document.activeElement.blur();
+  assert.equal(f.manager.editingInput, false);
+});
+
+test('activation OK is consumed and cannot skip the name through a subsequent keypress', (t) => {
+  const f = inputFixture(t);
+  const input = f.input('src-name');
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), true);
+  assert.equal(f.document.activeElement, input);
+  assert.equal(input.onkeypress, undefined);
+  assert.equal(f.manager.focusIdx, 0);
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter', repeat: true }), true);
+  assert.equal(f.document.activeElement, input);
+});
+
+test('native keyboard navigation and character selection do not rebuild or change the field', (t) => {
+  const f = inputFixture(t);
+  f.manager.handleKey(KEY.OK);
+  const input = f.input('src-name');
+  f.document.emit('keyboardStateChange', { detail: { visibility: true } });
+  const renders = f.renders.length;
+  for (const code of [KEY.OK, KEY.UP, KEY.DOWN, KEY.LEFT, KEY.RIGHT, KEY.BACK, 65, 49, 8, 229]) {
+    assert.equal(f.manager.handleKey(code, { isComposing: code === 229 }), false);
+    assert.equal(f.document.activeElement, input);
+  }
+  assert.equal(f.renders.length, renders);
+  input.value = 'Native keyboard';
+  input.oninput();
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), true);
+  assert.equal(f.manager.form.name, 'Native keyboard');
+  assert.equal(f.manager.focusIdx, 1);
+  assert.equal(f.document.activeElement, null);
+  assert.equal(f.saves.length, 0);
+});
+
+test('Enter selects the next field without saving and OK explicitly starts its editor', (t) => {
+  const f = inputFixture(t);
+  const values = ['Remote source', 'https://source.test/list.m3u', 'https://epg.test/guide.xml'];
+  for (const [idx, id] of ['src-name', 'src-m3u', 'src-epg'].entries()) {
+    assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), true);
+    const input = f.input(id);
+    assert.equal(f.document.activeElement, input);
+    input.value = values[idx];
+    assert.equal(f.manager.handleKey(KEY.OK, { code: idx === 1 ? 'NumpadEnter' : 'Enter' }), true);
+    assert.equal(f.document.activeElement, null);
+    assert.equal(f.manager.focusIdx, idx + 1);
+    assert.equal(f.manager.editingInput, false);
+    assert.equal(f.saves.length, 0);
+  }
+  assert.equal(f.manager.handleKey(KEY.OK, { repeat: true }), true);
+  assert.equal(f.saves.length, 0);
+  assert.equal(f.manager.handleKey(KEY.OK), true);
+  const saved = f.stored()[0];
+  assert.deepEqual(saved, { id: saved.id, name: values[0], m3uUrl: values[1], epgUrl: values[2] });
+});
+
+test('Back hiding the keyboard restores bidirectional navigation even when input stays focused', (t) => {
+  const f = inputFixture(t);
+  f.manager.handleKey(KEY.OK);
+  const input = f.input('src-name');
+  input.value = 'Preserved name';
+  input.oninput();
+  f.document.emit('keyboardStateChange', { detail: { visibility: true } });
+  f.document.emit('keyboardStateChange', { detail: { visibility: false } });
+  assert.equal(f.document.activeElement, input);
+  assert.equal(f.manager.editingInput, false);
+  assert.equal(f.manager.handleKey(KEY.DOWN), true);
+  assert.equal(f.manager.focusIdx, 1);
+  assert.equal(f.manager.handleKey(KEY.UP), true);
+  assert.equal(f.manager.focusIdx, 0);
+  assert.equal(f.input('src-name').value, 'Preserved name');
+  assert.equal(f.manager.handleKey(KEY.OK), true);
+  assert.equal(f.document.activeElement, f.input('src-name'));
+});
+
+test('OK reopens the same still-focused field after the native keyboard was hidden', (t) => {
+  const f = inputFixture(t);
+  f.manager.handleKey(KEY.OK);
+  const input = f.input('src-name');
+  let focuses = 0;
+  const focus = input.focus;
+  input.focus = () => { focuses++; focus(); };
+  f.document.emit('keyboardStateChange', { detail: { visibility: true } });
+  f.document.emit('keyboardStateChange', { detail: { visibility: false } });
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), true);
+  assert.equal(focuses, 1);
+  assert.equal(f.manager.editingInput, true);
+  assert.equal(f.manager.focusIdx, 0);
+  assert.equal(f.document.activeElement, input);
+});
+
+test('keyboard visibility and voice hide-show transitions never blur, advance or rebuild fields', (t) => {
+  const f = inputFixture(t);
+  const input = f.input('src-name');
+  input.focus();
+  const renders = f.renders.length;
+  for (const visibility of [true, false, true]) {
+    f.document.emit('keyboardStateChange', { detail: { visibility } });
+    assert.equal(f.manager.focusIdx, 0);
+    assert.equal(f.document.activeElement, input);
+    assert.equal(f.renders.length, renders);
+    assert.equal(f.manager.editingInput, visibility);
+  }
+  input.blur();
+  assert.equal(f.manager.handleKey(KEY.DOWN), false);
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), false);
+  assert.equal(f.renders.length, renders);
+  f.document.emit('keyboardStateChange', { detail: { visibility: false } });
+  assert.equal(f.manager.handleKey(KEY.DOWN), true);
+  assert.equal(f.manager.focusIdx, 1);
+});
+
+test('IME confirmation and composing Enter do not finish input', (t) => {
+  const f = inputFixture(t);
+  const input = f.input('src-name');
+  input.focus();
+  assert.equal(f.manager.handleKey(65), false);
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter', isComposing: true }), false);
+  input.oncompositionstart();
+  input.value = '中文名称';
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), false);
+  assert.equal(f.manager.handleKey(KEY.BACK), false);
+  assert.equal(f.document.activeElement, input);
+  input.oncompositionend();
+  assert.equal(f.manager.handleKey(KEY.OK, { code: 'Enter' }), true);
+  assert.equal(f.manager.form.name, '中文名称');
+  assert.equal(f.manager.focusIdx, 1);
+});
+
+test('Back finishes desktop input without closing, arrows revisit fields and retain text', (t) => {
+  const f = inputFixture(t);
+  f.manager.handleKey(KEY.OK);
+  const input = f.input('src-name');
+  input.value = 'Desktop source';
+  assert.equal(f.manager.handleKey(KEY.BACK), true);
+  assert.equal(f.manager.isOpen(), true);
+  assert.equal(f.document.activeElement, null);
+  assert.equal(f.manager.handleKey(KEY.DOWN), true);
+  assert.equal(f.manager.handleKey(KEY.OK), true);
+  assert.equal(f.document.activeElement, f.input('src-m3u'));
+  assert.equal(f.manager.handleKey(KEY.UP), true);
+  assert.equal(f.manager.focusIdx, 0);
+  assert.equal(f.manager.form.name, 'Desktop source');
+});
+
+test('Enter can skip optional EPG without bypassing the empty M3U check', (t) => {
+  const f = inputFixture(t);
+  for (let idx = 0; idx < 3; idx++) {
+    f.manager.handleKey(KEY.OK);
+    f.manager.handleKey(KEY.OK, { code: 'Enter' });
+  }
+  f.manager.handleKey(KEY.OK);
+  assert.equal(f.saves.length, 0);
+  assert.equal(f.manager.isOpen(), true);
+  f.manager.handleKey(KEY.UP);
+  f.manager.handleKey(KEY.UP);
+  f.manager.handleKey(KEY.OK);
+  const input = f.input('src-m3u');
+  input.value = 'https://source.test/list.m3u';
+  input.oninput();
+  f.manager.handleKey(KEY.OK, { code: 'Enter' });
+  f.manager.handleKey(KEY.DOWN);
+  f.manager.handleKey(KEY.OK);
+  assert.equal(f.saves.length, 1);
+  assert.equal(f.stored()[0].epgUrl, '');
+});
+
+test('typed source values persist through save, reopen and editing an existing source', (t) => {
+  const f = inputFixture(t);
+  const values = { name: 'Browser test', m3uUrl: 'https://source.test/list.m3u', epgUrl: 'https://epg.test/guide.xml' };
+  for (const [id, key] of [['src-name', 'name'], ['src-m3u', 'm3uUrl'], ['src-epg', 'epgUrl']]) {
+    const input = f.input(id);
+    input.focus();
+    input.value = values[key];
+    input.oninput();
+  }
+  f.manager._onClick({ target: { closest: (selector) => selector === '.panel' ? f.el : {
+    dataset: { role: 'row', idx: '3' }, closest() { return this; }
+  } } });
+  assert.equal(f.saves.length, 1);
+  assert.equal(f.manager.isOpen(), false);
+  assert.deepEqual(f.reloads[0], f.stored()[0]);
+  const id = f.stored()[0].id;
+  assert.deepEqual(f.stored()[0], { id, ...values });
+  f.manager.open();
+  f.manager._editSource(0);
+  const input = f.input('src-name');
+  input.focus();
+  input.value = 'Renamed';
+  input.oninput();
+  f.manager.handleKey(KEY.BACK);
+  f.manager.focusIdx = 3;
+  assert.equal(f.manager.handleKey(KEY.OK), true);
+  assert.deepEqual(f.stored(), [{ id, ...values, name: 'Renamed' }]);
+  assert.equal(f.saves.length, 2);
+});
 
 test('direct video and HTTP error bodies are canceled without reading or awaiting cancellation', async (t) => {
   const f = fixture(t);

@@ -26,6 +26,25 @@ function webosAssets() {
   };
 }
 
+// file:// 下用普通脚本避开 CORS，并在诊断脚本之后执行以捕获加载失败。
+function classicScript() {
+  return {
+    name: 'classic-script',
+    apply: 'build',
+    enforce: 'post',
+    transformIndexHtml(html) {
+      let src = '';
+      html = html.replace(/\s*<script type="module"[^>]*\ssrc="([^"]+)"[^>]*><\/script>/, (m, s) => {
+        src = s;
+        return '';
+      });
+      if (!src) throw new Error('classic-script: module entry script not found');
+      html = html.replace(/(<link\b[^>]*?)\s+crossorigin(?:="[^"]*")?/g, '$1');
+      return html.replace('</body>', `  <script src="${src}"></script>\n  </body>`);
+    }
+  };
+}
+
 // 开发代理：转发外部 M3U/EPG/流，忽略自签证书、补 CORS 头；
 // 对 m3u8 播放列表重写内部切片/子列表地址，使其也走代理（解决 hls.js 跨域）。
 function devProxy() {
@@ -248,11 +267,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     target: 'chrome79',
-    emptyOutDir: true
+    emptyOutDir: true,
+    modulePreload: false,
+    // IIFE 单块输出时 Vite 默认把 CSS 塞进 JS 运行时注入；关掉拆分才会产出独立的 <link>。
+    cssCodeSplit: false,
+    rollupOptions: {
+      output: { format: 'iife', inlineDynamicImports: true }
+    }
   },
   server: {
     port: 5173,
     host: true
   },
-  plugins: [webosAssets(), devProxy()]
+  plugins: [webosAssets(), devProxy(), classicScript()]
 });

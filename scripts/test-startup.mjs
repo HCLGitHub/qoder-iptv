@@ -10,6 +10,11 @@ import { setLang } from '../src/core/i18n.js';
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const ranges = (items) => ({ length: items.length, start: (i) => items[i][0], end: (i) => items[i][1] });
 
+test('webOS graphics use supported FHD resolution independently of video decoding', async () => {
+  const info = JSON.parse(await readFile(new URL('../appinfo.json', import.meta.url), 'utf8'));
+  assert.equal(info.resolution, '1920x1080');
+});
+
 function fixture(t) {
   t.mock.method(console, 'log', () => {});
   const listeners = new Map();

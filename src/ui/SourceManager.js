@@ -197,6 +197,16 @@ export class SourceManager {
     this.focusIdx = 0; // 0名称 1:M3U 2:EPG 3:保存按钮 4..:源列表
     this.form = blankForm();
     this.editingInput = false;
+    this.composingInput = null;
+    this.keyboardVisible = false;
+    document.addEventListener('keyboardStateChange', (event) => {
+      this.keyboardVisible = event.detail.visibility;
+      if (!this.isOpen()) return;
+      this.editingInput = this.keyboardVisible && this.focusIdx <= 2 &&
+        document.activeElement === this.el.querySelector('#' + ['src-name', 'src-m3u', 'src-epg'][this.focusIdx]);
+      // 语音输入也会短暂收起键盘，这里只恢复导航状态，不主动失焦。
+      this._updateInputHint();
+    });
 
     this.onUseSource = null; // (source) => void
     this.onClose = null;
@@ -242,9 +252,11 @@ export class SourceManager {
       this._editSource(idx - 4);
       return;
     }
-    // 正在编辑的输入框被再次点击：不重渲，避免打断输入与光标
-    if (role === 'row' && idx <= 2 && this.editingInput && this.focusIdx === idx) return;
     this.focusIdx = idx;
+    if (role === 'row' && idx <= 2) {
+      this._confirm();
+      return;
+    }
     if (role === 'del') {
       this._deleteFocused();
       return;
@@ -259,6 +271,7 @@ export class SourceManager {
     this.focusIdx = this.sources.length ? 4 : 0;
     this.form = blankForm();
     this.editingInput = false;
+    this.composingInput = null;
     this.editingId = null;
     this.el.classList.remove('hidden');
     this.render();
@@ -305,6 +318,7 @@ export class SourceManager {
       <div class="panel">
         <div class="panel-close" data-role="close">✕</div>
         <h2>${t('sm.title')}</h2>
+        <div class="src-input-hint">${t('sm.navigateHint')}</div>
         ${editing ? `<div class="hint" style="color:#7fd6ff">${t('sm.editing', { name: esc(editing.name) })} <span class="row-edit" data-role="cancel-edit" style="margin-left:12px">${t('sm.cancelEdit')}</span></div>` : ''}
         <div class="form-row${f(0)}" data-role="row" data-idx="0">
           <span class="label">${t('sm.name')}</span>
@@ -333,28 +347,79 @@ export class SourceManager {
   }
 
   _syncInputs() {
-    // 输入框实时写回 form
-    const bind = (id, key) => {
+    const bind = (id, key, idx) => {
       const inp = this.el.querySelector('#' + id);
-      if (inp) inp.oninput = () => { this.form[key] = inp.value; };
+      if (!inp) return;
+      inp.oncompositionstart = () => { this.composingInput = inp; };
+      inp.oncompositionend = () => {
+        this.composingInput = null;
+        this.form[key] = inp.value;
+      };
+      inp.oninput = () => { this.form[key] = inp.value; };
+      inp.onfocus = () => {
+        this.focusIdx = idx;
+        this.editingInput = true;
+        const focused = this.el.querySelector('.focused');
+        if (focused) focused.classList.remove('focused');
+        inp.closest('.form-row').classList.add('focused');
+        this._updateInputHint();
+      };
+      inp.onblur = () => {
+        this.form[key] = inp.value;
+        this.editingInput = false;
+        this.composingInput = null;
+        this._updateInputHint();
+      };
     };
-    bind('src-name', 'name');
-    bind('src-m3u', 'm3uUrl');
-    bind('src-epg', 'epgUrl');
+    bind('src-name', 'name', 0);
+    bind('src-m3u', 'm3uUrl', 1);
+    bind('src-epg', 'epgUrl', 2);
   }
 
-  handleKey(code) {
-    // 编辑输入框时，仅拦截返回键退出编辑，其余交给输入框
+  _updateInputHint() {
+    const hint = this.el.querySelector('.src-input-hint');
+    if (hint) hint.textContent = this.editingInput
+      ? t('sm.inputHint', { field: t(['sm.name', 'sm.m3uUrl', 'sm.epgUrl'][this.focusIdx]) })
+      : t('sm.navigateHint');
+  }
+
+  _finishInput() {
+    const input = document.activeElement;
+    const ids = ['src-name', 'src-m3u', 'src-epg'];
+    const idx = ids.findIndex((id) => input === this.el.querySelector('#' + id));
+    if (input && idx >= 0) {
+      this.form[['name', 'm3uUrl', 'epgUrl'][idx]] = input.value;
+      input.blur();
+    }
+    this.editingInput = false;
+    this.composingInput = null;
+    this._updateInputHint();
+  }
+
+  _advanceInput() {
+    this._finishInput();
+    this.focusIdx++;
+    this.render();
+  }
+
+  handleKey(code, event) {
+    if (this.composingInput || code === 229 || (event && event.isComposing)) return false;
     if (this.editingInput) {
-      if (code === KEY.BACK || code === KEY.OK) {
-        this.editingInput = false;
-        const active = document.activeElement;
-        if (active && active.blur) active.blur();
-        this.render();
+      // 软键盘选字由系统处理；其 Enter 才会向输入框投递键盘事件。
+      if (code === KEY.OK && event &&
+          (event.code === 'Enter' || event.code === 'NumpadEnter')) {
+        if (!event.repeat) this._advanceInput();
         return true;
       }
-      return false; // 让输入法处理
+      if (this.keyboardVisible) return false;
+      if (code === KEY.BACK) {
+        this._finishInput();
+        return true;
+      }
+      if (code === KEY.UP || code === KEY.DOWN) this._finishInput();
+      else return false;
     }
+    if (this.keyboardVisible) return false;
 
     switch (code) {
       case KEY.UP:
@@ -366,6 +431,8 @@ export class SourceManager {
         this.render();
         break;
       case KEY.OK:
+        if (event && event.repeat) return true;
+        // 消费唤起键盘的 OK，避免它的 keypress 再次落到新聚焦的输入框。
         this._confirm();
         break;
       case KEY.BLUE:
@@ -389,7 +456,10 @@ export class SourceManager {
       const ids = ['src-name', 'src-m3u', 'src-epg'];
       const inp = this.el.querySelector('#' + ids[this.focusIdx]);
       if (inp) {
-        this.editingInput = true;
+        if (document.activeElement === inp) {
+          if (this.editingInput) return;
+          inp.blur();
+        }
         inp.focus();
         if (inp.setSelectionRange) inp.setSelectionRange(inp.value.length, inp.value.length);
       }
@@ -587,7 +657,7 @@ export class SourceManager {
 
   close() {
     this._cancelTest();
-    this.editingInput = false;
+    this._finishInput();
     this.el.classList.add('hidden');
     if (this.onClose) this.onClose();
   }

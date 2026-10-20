@@ -564,9 +564,7 @@ function relocalize() {
   }
 }
 
-// ---- 分辨率自适应：把 1920×1080 设计稿等比缩放贴合实际画布 ----
-// webOS 4K 电视画布为 3840×2160（scale=2，原生 4K 渲染，UI 清晰）；
-// 1080p 电视或任意浏览器窗口同样按 min(w/1920,h/1080) 等比铺满并居中留边。
+// webOS 图形画布使用 FHD；视频解码分辨率独立于 UI 画布。
 function fitScreen() {
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -673,7 +671,7 @@ player.onStateChange = (ev) => {
 $('catchup-bar').addEventListener('click', (e) => catchupBar.onClick(e));
 
 // ---- 全局遥控分发 ----
-function onKey(code) {
+function onKey(code, event) {
   // 退出确认对话框优先（最高）
   if (exitDialogOpen) return handleExitKey(code);
 
@@ -681,7 +679,7 @@ function onKey(code) {
   if (groupManager.isOpen()) return groupManager.handleKey(code);
   if (playerTuning.isOpen()) return playerTuning.handleKey(code);
   if (deviceInfo.isOpen()) return deviceInfo.handleKey(code);
-  if (sourceManager.isOpen()) return sourceManager.handleKey(code);
+  if (sourceManager.isOpen()) return sourceManager.handleKey(code, event);
   if (settings.isOpen()) return settings.handleKey(code);
   if (epgGuide.isOpen()) return epgGuide.handleKey(code);
   if (channelMenu.isOpen()) return channelMenu.handleKey(code);
@@ -782,7 +780,7 @@ $('exit-dialog').addEventListener('click', (e) => {
 // ---- 键盘监听 ----
 document.addEventListener('keydown', (e) => {
   player.userUnmute(); // 首次交互后恢复声音（浏览器自动播放策略下曾被静音）
-  const handled = onKey(e.keyCode);
+  const handled = onKey(e.keyCode, e);
   if (handled) {
     e.preventDefault();
     e.stopPropagation();

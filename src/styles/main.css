@@ -284,6 +284,8 @@ body {
 /* 源列表：源多了单独滚动，表头/输入框/关闭按钮保持固定不被挤出屏幕（单位用 px，因为 #app 是 1920×1080 缩放坐标系，vh/vw 会指向真实屏幕而错位） */
 .src-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .panel h2 { font-size: 44px; margin-bottom: 32px; }
+#source-manager .panel h2:first-of-type { margin-bottom: 14px; }
+.src-input-hint { flex-shrink: 0; font-size: 24px; line-height: 1.5; min-height: 72px; color: #7fd6ff; }
 /* 面板右上角关闭按钮（鼠标用户没有返回键） */
 .panel-close {
   position: absolute; top: 22px; right: 26px; width: 58px; height: 58px;
