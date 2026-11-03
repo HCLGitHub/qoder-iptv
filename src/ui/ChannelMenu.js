@@ -11,6 +11,11 @@ const DAY_OFFSETS = [];
 for (let i = -7; i <= 4; i++) DAY_OFFSETS.push(i);
 const TODAY_POS = DAY_OFFSETS.indexOf(0);
 
+// 频道列虚拟化行高（与 main.css .cm-channel-item 的定高一致，改高需两处同步）。
+// 窗口外用 padding 占位，只真实渲染视口附近若干行——几万个频道也能秒开。
+const CHAN_ROW_H = 100;
+const CHAN_OVERSCAN = 5;
+
 // 列索引：0=分组 1=频道 2=日期 3=节目单
 const COL_GROUP = 0;
 const COL_CHAN = 1;
@@ -30,6 +35,10 @@ export class ChannelMenu {
     this.epgList = [];
     this.currentKey = null;
     this.settingsFocused = false; // 分组栏「设置」入口是否聚焦
+    // 频道列虚拟化窗口：[winStart, winEnd) 之外的行只有 padding 占位
+    this._winStart = 0;
+    this._winEnd = 0;
+    this._scrollRaf = 0;
 
     this.onPlayLive = null;
     this.onPlayCatchup = null;
@@ -189,6 +198,10 @@ export class ChannelMenu {
     this._chanSig = null; // 骨架重建后频道列需强制重绘
     this._chanArr = null;
     this._paintedFoc = null;
+    this._winStart = 0;
+    this._winEnd = 0;
+    // 鼠标滚轮/惯性滚动：rAF 合帧后按滚动位置平移窗口（rAF 在骨架重建后随新元素重挂）
+    this.el.querySelector('#cm-chan-list').addEventListener('scroll', () => this._onChanScroll(), { passive: true });
   }
 
   _renderGroups() {
@@ -208,7 +221,8 @@ export class ChannelMenu {
     if (setEl) setEl.classList.toggle('focused', this.col === COL_GROUP && this.settingsFocused);
   }
 
-  // 频道列（含 logo）：内容签名不变则只更新焦点态，不重建 DOM——避免每次导航都重载图标。
+  // 频道列（含 logo）：窗口化渲染——只画视口附近的行，几千个台的分组不再一次建几万个节点。
+  // 内容签名不变则只更新焦点态，不重建 DOM；签名变了也只重建当前窗口段，logo 原样保留。
   _renderChannels() {
     const chans = this._curGroup().channels;
     const titleEl = this.el.querySelector('#cm-chan-title');
@@ -217,17 +231,76 @@ export class ChannelMenu {
     if (!listEl) return;
 
     const sig = this._channelsSig(chans);
-    // 数组身份也要比：分组对象每次 open() 都是新建的，而上面那些版本号可能
-    // 一个都没变（同一个源重新开菜单）——光看版本号会认为可以沿用旧 DOM，
-    // 而骨架重建后旧 DOM 已经不在了。
-    if (sig !== this._chanSig || chans !== this._chanArr) {
+    // 数组身份也要比：分组对象每次 open() 都是新建的，而签名里的版本号可能
+    // 一个都没变（同一个源重新开菜单）——光看版本号会认为可以沿用旧 DOM。
+    const newList = chans !== this._chanArr;
+    if (sig !== this._chanSig || newList) {
       this._chanSig = sig;
       this._chanArr = chans;
-      listEl.innerHTML = chans.map((ch, i) => this._channelItemHtml(ch, i)).join('');
-      // 重建时 focused 类是直接写进 HTML 的，把重绘基准对齐到这个事实上
-      this._paintedFoc = this.col === COL_CHAN ? this.chanIdx : -1;
+      if (newList) {
+        // 换分组/换源/重开菜单：窗口以当前频道为中心重新定位。
+        // scrollTop 必须等 _paintChanWindow 撑出新高度后再设，否则会被旧内容的
+        // 可滚动上限 clamp 到错误位置。
+        this._winStart = Math.max(0, this.chanIdx - Math.floor(this._chanPer(listEl) / 2));
+      }
+      this._paintChanWindow(listEl); // 重建时 focused 类是直接写进 HTML 的，_paintChanWindow 里对齐基准
+      if (newList) listEl.scrollTop = this._winStart * CHAN_ROW_H;
     } else {
-      this._updateChanFocus(listEl); // 仅移动焦点：logo 原样保留
+      this._ensureChanWindow(listEl); // 焦点越出视口则平移窗口重绘
+      this._updateChanFocus(listEl); // 窗口没动就只切焦点：logo 原样保留
+    }
+  }
+
+  // 频道列视口能容纳的行数（向上取整，含压边的半行）
+  _chanPer(listEl) {
+    return Math.max(1, Math.ceil(listEl.clientHeight / CHAN_ROW_H));
+  }
+
+  // 画当前窗口段：窗口外行用伪元素占位（高度走 CSS 变量；不能用容器 padding——
+  // border-box 下大 padding 会把定高撑破，flex 约束失效）。总占位高恒定 =
+  // 总行数×行高，滚动条长度不随窗口平移跳变；只有视口附近 +2×OVERSCAN 是真实 DOM。
+  _paintChanWindow(listEl) {
+    const chans = this._chanArr;
+    const total = chans.length;
+    const s = Math.max(0, Math.min(this._winStart, Math.max(0, total - 1)));
+    const e = Math.min(total, s + this._chanPer(listEl) + CHAN_OVERSCAN * 2);
+    listEl.style.setProperty('--sp-top', s * CHAN_ROW_H + 'px');
+    listEl.style.setProperty('--sp-bottom', (total - e) * CHAN_ROW_H + 'px');
+    listEl.innerHTML = chans.slice(s, e).map((ch, i) => this._channelItemHtml(ch, s + i)).join('');
+    this._winStart = s;
+    this._winEnd = e;
+    this._paintedFoc = this.col === COL_CHAN ? this.chanIdx : -1;
+  }
+
+  // 焦点行越出视口时把窗口平移到以焦点为中心（沿用原 scrollIntoView 居中的手感），滚动位置同步。
+  _ensureChanWindow(listEl) {
+    const total = this._chanArr ? this._chanArr.length : 0;
+    if (!total || this.col !== COL_CHAN) return;
+    const per = this._chanPer(listEl);
+    const i = this.chanIdx;
+    if (i >= this._winStart && i < this._winStart + per) return; // 仍在视口内，不动
+    this._winStart = Math.max(0, Math.min(i - Math.floor(per / 2), total - 1));
+    listEl.scrollTop = this._winStart * CHAN_ROW_H;
+    this._paintChanWindow(listEl);
+  }
+
+  // 鼠标滚轮/惯性滚动：rAF 合帧后按滚动位置重算窗口起点，start 没变就不重绘。
+  _onChanScroll() {
+    if (this._scrollRaf) return;
+    this._scrollRaf = requestAnimationFrame(() => {
+      this._scrollRaf = null;
+      this._syncChanWindow();
+    });
+  }
+
+  _syncChanWindow() {
+    const listEl = this.el.querySelector('#cm-chan-list');
+    if (!listEl || !this._chanArr || !this._chanArr.length) return;
+    let s = Math.round(listEl.scrollTop / CHAN_ROW_H) - CHAN_OVERSCAN;
+    s = Math.max(0, Math.min(s, this._chanArr.length - 1));
+    if (s !== this._winStart) {
+      this._winStart = s;
+      this._paintChanWindow(listEl);
     }
   }
 
@@ -280,16 +353,21 @@ export class ChannelMenu {
   }
 
   // 仅更新频道列焦点态（不动 <img>）：切 focused 类即可，提示的显隐交给 CSS。
-  // 只动「离开的那行」和「新进的那行」：几千个台的分组里逐个 toggle 一遍，
-  // 就是每按一下方向键几千次 DOM 操作，而真正变了的最多两行。
+  // 索引是全列表绝对索引，只有落在窗口内的才对应真实 DOM；窗口外（被鼠标滚走了）
+  // 静默跳过，下次按方向键会先平移窗口把它带回来。只动「离开的那行」和「新进的那行」。
   _updateChanFocus(listEl) {
-    const items = listEl.children;
     const foc = this.col === COL_CHAN ? this.chanIdx : -1;
     if (this._paintedFoc === foc) return;
-    if (this._paintedFoc != null && items[this._paintedFoc]) {
-      items[this._paintedFoc].classList.remove('focused');
+    const childOf = (abs) =>
+      abs >= this._winStart && abs < this._winEnd ? listEl.children[abs - this._winStart] : null;
+    if (this._paintedFoc != null) {
+      const old = childOf(this._paintedFoc);
+      if (old) old.classList.remove('focused');
     }
-    if (foc >= 0 && items[foc]) items[foc].classList.add('focused');
+    if (foc >= 0) {
+      const neu = childOf(foc);
+      if (neu) neu.classList.add('focused');
+    }
     this._paintedFoc = foc;
   }
 
@@ -339,7 +417,19 @@ export class ChannelMenu {
   }
 
   _scrollToFocused() {
-    const focused = this.el.querySelector('.focused');
+    // 频道列是虚拟列表：显式把焦点行滚进视口（scrollIntoView 对 padding 占位区算不准）。
+    // 窗口平移路径已把 scrollTop 对齐，这里只兜「焦点在视口内但没对齐」的余量。
+    const chanList = this.el.querySelector('#cm-chan-list');
+    if (chanList && this.col === COL_CHAN && this._chanArr) {
+      const top = this.chanIdx * CHAN_ROW_H;
+      const cur = chanList.scrollTop;
+      if (top < cur) chanList.scrollTop = top;
+      else if (top + CHAN_ROW_H > cur + chanList.clientHeight) {
+        chanList.scrollTop = top + CHAN_ROW_H - chanList.clientHeight;
+      }
+    }
+    // 其它列照旧：滚动到焦点元素居中（频道列的 .focused 已在上面处理，跳过）
+    const focused = this.el.querySelector('.focused:not(.cm-channel-item)');
     if (focused && focused.scrollIntoView) {
       focused.scrollIntoView({ block: 'center' });
     }

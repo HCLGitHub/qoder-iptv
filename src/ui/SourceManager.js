@@ -335,7 +335,7 @@ export class SourceManager {
         <div class="btn-row">
           <div class="btn${f(3)}" data-role="row" data-idx="3">${editing ? t('sm.saveEdit') : t('sm.save')}</div>
         </div>
-        <h2 style="font-size:34px;margin:32px 0 16px">${t('sm.saved')}</h2>
+        <h2 style="font-size:28px;margin:12px 0 8px">${t('sm.saved')}</h2>
         <div class="src-list">${listHtml}</div>
         ${this.testMsg && !this.testing ? `<div class="hint" id="test-status" style="color:#4fd08a">${esc(this.testMsg)}</div>` : ''}
         <div class="hint">${t('sm.hint')}</div>

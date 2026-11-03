@@ -25,12 +25,23 @@ function resolveReference(value, baseUrl) {
   }
 }
 
-// 从 #EXTM3U 头解析默认 EPG 地址
-function parseHeaderEpg(headerLine, baseUrl) {
+// 从 #EXTM3U 头解析默认 EPG 地址与全表回看默认值。
+// 头部级属性是部分自建源（Xtream 转 M3U 等）的写法：回看参数只写一遍，
+// 频道条目上不再重复。频道级声明优先于头部默认。
+function parseHeader(headerLine, baseUrl) {
   const attrs = parseAttrs(headerLine);
   const url = attrs['url-tvg'] || attrs['x-tvg-url'] || '';
   // 可能是逗号分隔的多个地址，取第一个
-  return resolveReference(url.split(',')[0], baseUrl);
+  const epgUrl = resolveReference(url.split(',')[0], baseUrl);
+  const days = parseInt(attrs['catchup-days'] || attrs['tvg-rec'] || '0', 10) || 0;
+  const shift = parseInt(attrs['tvg-shift'], 10);
+  return {
+    epgUrl,
+    catchup: attrs['catchup'] || attrs['catchup-type'] || '',
+    catchupSource: attrs['catchup-source'] || '',
+    catchupDays: days,
+    tvgShift: Number.isNaN(shift) ? 0 : shift
+  };
 }
 
 /**
@@ -42,7 +53,7 @@ function parseHeaderEpg(headerLine, baseUrl) {
 export function parseM3U(text, baseUrl = '') {
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
   const raws = [];
-  let epgUrl = '';
+  let hdr = parseHeader('', baseUrl);
   let pending = null;
 
   for (let raw of lines) {
@@ -50,7 +61,7 @@ export function parseM3U(text, baseUrl = '') {
     if (!line) continue;
 
     if (line.startsWith('#EXTM3U')) {
-      epgUrl = parseHeaderEpg(line, baseUrl);
+      hdr = parseHeader(line, baseUrl);
       continue;
     }
 
@@ -60,15 +71,24 @@ export function parseM3U(text, baseUrl = '') {
       const commaIdx = line.indexOf(',');
       const title = commaIdx >= 0 ? line.slice(commaIdx + 1).trim() : '';
       const tvgName = attrs['tvg-name'] || '';
+      // 回看天数：频道级 catchup-days > tvg-rec > timeshift（旧别名，兼容存量源）> 头部默认。
+      // 写了天数但没写类型时视为 default 型（与既有 timeshift 行为一致）。
+      const catchupType = attrs['catchup'] || attrs['catchup-type'] || '';
+      const catchupDays =
+        parseInt(attrs['catchup-days'] || attrs['tvg-rec'] || attrs['timeshift'] || '0', 10) ||
+        hdr.catchupDays || 0;
+      const shift = parseInt(attrs['tvg-shift'], 10);
       pending = {
         tvgId: attrs['tvg-id'] || '',
         title: title || tvgName || '未命名',
         tvgName,
         logo: resolveReference(attrs['tvg-logo'], baseUrl),
         group: attrs['group-title'] || '未分组',
-        catchup: (attrs['catchup'] || attrs['timeshift'] ? (attrs['catchup'] || 'default') : ''),
-        catchupSource: attrs['catchup-source'] || '',
-        catchupDays: parseInt(attrs['catchup-days'] || attrs['timeshift'] || '0', 10) || 0,
+        catchup: catchupType || (catchupDays > 0 ? 'default' : ''),
+        catchupSource: attrs['catchup-source'] || hdr.catchupSource || '',
+        catchupDays,
+        tvgShift: Number.isNaN(shift) ? hdr.tvgShift : shift,
+        chnoRaw: parseInt(attrs['tvg-chno'], 10) || 0,
         headers: {}
       };
       continue;
@@ -97,7 +117,7 @@ export function parseM3U(text, baseUrl = '') {
     }
   }
 
-  return { epgUrl, channels: groupByName(raws) };
+  return { epgUrl: hdr.epgUrl, channels: groupByName(raws) };
 }
 
 // 把当前选中源的字段镜像到频道对象顶层，便于播放/回看/收藏等直接读取
@@ -129,7 +149,11 @@ function groupByName(raws) {
     };
     const gkey = r.group + '|' + r.title;
     if (map.has(gkey)) {
-      map.get(gkey).sources.push(source);
+      const ch = map.get(gkey);
+      ch.sources.push(source);
+      // EPG 时移与源编号是频道级属性：首个声明者生效，不随备用源变化
+      if (!ch.tvgShift && r.tvgShift) ch.tvgShift = r.tvgShift;
+      if (!ch.chnoRaw && r.chnoRaw) ch.chnoRaw = r.chnoRaw;
       continue;
     }
     const ch = {
@@ -139,6 +163,8 @@ function groupByName(raws) {
       epgName: r.tvgName || r.title, // EPG 匹配名（优先干净的 tvg-name）
       group: r.group,
       logo: r.logo,
+      tvgShift: r.tvgShift || 0, // EPG 时间轴相对本地的偏移小时数（tvg-shift）
+      chnoRaw: r.chnoRaw || 0, // 源里声明的 tvg-chno（0 = 未声明）
       sources: [source],
       sourceIdx: 0,
       key: 'ch:' + gkey // 唯一键：分组+名称
@@ -156,6 +182,10 @@ function groupByName(raws) {
  * 频道菜单和换台都按分组顺序走，所以编号也按分组聚合，菜单里从上往下就是 1、2、3……
  * 不用源里的 tvg-id：第三方源的 tvg-id 常缺失、重复或是无规律的台号。
  * tvgId 保持原值不动，EPG 匹配和回看仍依赖它。
+ *
+ * 例外：源里声明过 tvg-chno（哪怕只有一个频道）时尊重源编号——不少源把号码
+ * 当作机顶盒频道位号，用户遥控器输的号要跟运营商宣传单对得上。此时保留合法
+ * 正整数编号，重复者与缺号频道自动补未占用的号。
  * @param {Array} channels
  * @returns {Array} 原数组（原地修改）
  */
@@ -165,12 +195,35 @@ export function renumberChannels(channels) {
     if (!groups.has(ch.group)) groups.set(ch.group, []);
     groups.get(ch.group).push(ch);
   }
-  let n = 0;
-  for (const arr of groups.values()) {
-    for (const ch of arr) {
-      ch.index = ++n;
+  if (channels.some((ch) => ch.chnoRaw > 0)) {
+    const used = new Set();
+    for (const ch of channels) {
+      if (ch.chnoRaw > 0 && !used.has(ch.chnoRaw)) {
+        used.add(ch.chnoRaw);
+        ch.chno = String(ch.chnoRaw);
+      } else {
+        ch.chno = ''; // 重复/非法：先清空，下面统一补号
+      }
+    }
+    let n = 0;
+    for (const ch of channels) {
+      if (ch.chno) continue;
+      do { n++; } while (used.has(n));
+      used.add(n);
       ch.chno = String(n);
     }
+  } else {
+    let n = 0;
+    for (const arr of groups.values()) {
+      for (const ch of arr) {
+        ch.chno = String(++n);
+      }
+    }
+  }
+  // index 始终按分组顺序连编（内部序号，供数字换台兼容回退）
+  let idx = 0;
+  for (const arr of groups.values()) {
+    for (const ch of arr) ch.index = ++idx;
   }
   return channels;
 }

@@ -102,9 +102,12 @@ export function isCatchupAvailable(channel, programme, defaultDays = 7) {
  */
 export function buildCatchupUrl(channel, programme) {
   if (!channel || !programme) return null;
-  const startSec = Math.floor(programme.start / 1000);
-  const stopMs = isNaN(programme.stop) ? programme.start + 3600000 : programme.stop;
-  const endSec = Math.floor(stopMs / 1000);
+  // tvg-shift 平移视图会把 _epg 指回原始节目：网关按它自己的时间轴认 utc 参数，
+  // 这里必须用源时间，不能用界面显示用的平移时间。
+  const raw = programme._epg || programme;
+  const startSec = Math.floor(raw.start / 1000);
+  const rawStop = isNaN(raw.stop) ? raw.start + 3600000 : raw.stop;
+  const endSec = Math.floor(rawStop / 1000);
   const nowSec = Math.floor(Date.now() / 1000);
   const ctx = {
     start: startSec,

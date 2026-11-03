@@ -8,6 +8,8 @@ import { getEpgCache, setEpgCache } from './storage.js';
 const DAY_MS = 24 * 3600 * 1000;
 const CACHE_TTL = 6 * 3600 * 1000; // 6 小时
 const RETRY_DELAY = 60 * 1000; // 失败后最多冷却一分钟，由下一次查询触发重试
+// tvg-shift 平移视图缓存上限：声明时移的源极少，超限整体清掉即可，不做事后逐条淘汰
+const SHIFTED_MAX = 500;
 
 // 探测 EPG 类型：显式 type 优先，其次按 URL 特征
 // 猜错的代价不对称：DIYP 接口的地址常常只是「主机:端口/」，看不出任何特征，
@@ -37,6 +39,9 @@ class EpgStore {
     this.loadedDays = new Map(); // 'name|YYYY-MM-DD' -> expire
     this.retryAfter = new Map(); // 'name|YYYY-MM-DD' -> 下一次允许重试的时间
     this.pending = new Map(); // 'name|date' -> Promise（去重）
+    // tvg-shift 平移视图：'shift|key' -> { src, out }。以底层数组身份做失效——
+    // _mergeDay/_ingestRaw 替换数组后视图自动重建，无需额外版本号。
+    this._shifted = new Map();
     this._forceRefresh = false;
     this.onUpdate = null; // 新数据到达回调（由上层挂 refreshVisible）
     this._updTimer = null;
@@ -52,6 +57,7 @@ class EpgStore {
     this.loadedDays.clear();
     this.retryAfter.clear();
     this.pending.clear();
+    this._shifted.clear();
     this.loaded = false;
     this.version++;
     // 换源时把待触发的刷新一并取消，避免残留定时器对着新数据空刷一次
@@ -219,10 +225,22 @@ class EpgStore {
   }
 
   // ---------- 查询 ----------
+  // tvg-shift：源声明 EPG 时间轴偏移 N 小时（Xtream 转档源常见）。在查询侧平移
+  // start/stop，不动 programmes 里的原始数据；平移视图把原始节目挂在 _epg 上，
+  // 供回看按源时间轴生成地址（网关认的是它自己的时间）。
   getList(channel) {
     const key = this._key(channel);
     if (!key) return [];
-    return this.programmes.get(key) || [];
+    const list = this.programmes.get(key) || [];
+    const shiftMs = (((channel && parseInt(channel.tvgShift, 10)) || 0)) * 3600000;
+    if (!shiftMs || !list.length) return list;
+    const ck = shiftMs + '|' + key;
+    const hit = this._shifted.get(ck);
+    if (hit && hit.src === list) return hit.out;
+    const out = list.map((p) => ({ ...p, start: p.start + shiftMs, stop: p.stop + shiftMs, _epg: p }));
+    if (this._shifted.size >= SHIFTED_MAX) this._shifted.clear();
+    this._shifted.set(ck, { src: list, out });
+    return out;
   }
 
   // 当前/下一个节目（会触发当天懒加载）

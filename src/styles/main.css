@@ -190,6 +190,11 @@ body {
 .cm-col .cm-title { font-size: 28px; color: #808a94; padding: 24px 32px 12px; letter-spacing: 2px; }
 .cm-list { flex: 1; overflow-y: auto; padding: 0 12px 24px; }
 .cm-list::-webkit-scrollbar { width: 0; }
+/* 频道列虚拟化：窗口外行用伪元素占位（不能走容器 padding——border-box 下大 padding
+   会把定高撑破，flex 约束直接失效），CSS 变量由 ChannelMenu.js 按窗口位置写入 */
+#cm-chan-list { overflow-anchor: none; }
+#cm-chan-list::before { content: ''; display: block; height: var(--sp-top, 0px); }
+#cm-chan-list::after { content: ''; display: block; height: var(--sp-bottom, 0px); }
 
 .cm-date-item {
   font-size: 30px; padding: 18px 22px; border-radius: 12px; color: #d3dae1; white-space: nowrap;
@@ -217,6 +222,8 @@ body {
 
 .cm-channel-item {
   display: flex; align-items: center; gap: 20px; padding: 16px 20px; border-radius: 12px;
+  /* 定高：频道列虚拟化按 100px/行计算占位与窗口（见 ChannelMenu.js CHAN_ROW_H），改高需两处同步 */
+  height: 100px; flex-shrink: 0;
 }
 .cm-channel-item .num { width: 78px; font-size: 34px; font-weight: 700; color: #808a94; text-align: right; }
 .cm-channel-item .logo {
@@ -225,8 +232,8 @@ body {
 }
 .cm-channel-item .logo img { max-width: 100%; max-height: 100%; }
 .cm-channel-item .meta { flex: 1; min-width: 0; }
-.cm-channel-item .name { font-size: 32px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cm-channel-item .now { font-size: 24px; color: #808a94; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-channel-item .name { font-size: 32px; line-height: 38px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cm-channel-item .now { font-size: 24px; line-height: 28px; color: #808a94; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cm-channel-item .fav { color: #ffb300; font-size: 30px; }
 .cm-channel-item .src-badge { display: inline-block; font-size: 20px; color: #3ea6ff; border: 1px solid #3ea6ff; border-radius: 6px; padding: 0 8px; margin-left: 6px; vertical-align: middle; }
 .cm-channel-item.focused { background: #3ea6ff; }
@@ -281,8 +288,16 @@ body {
   padding: 48px; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
   display: flex; flex-direction: column;
 }
+/* 源管理面板固定高度：高度随内容自适应时，源少时列表只有一行，
+   flex:1 拿不到剩余空间。固定后「已保存的源」占满输入区以下的全部空间。
+   输入区/提示同步收紧间距，把高度让给源列表（约 5 行可见，再多列表内滚动）。 */
+#source-manager .panel { height: 1000px; padding: 40px 48px; }
+#source-manager .form-row { padding: 14px 28px; }
+#source-manager .src-input-hint { min-height: 48px; font-size: 22px; }
+#source-manager .btn-row { margin-top: 16px; }
 /* 源列表：源多了单独滚动，表头/输入框/关闭按钮保持固定不被挤出屏幕（单位用 px，因为 #app 是 1920×1080 缩放坐标系，vh/vw 会指向真实屏幕而错位） */
 .src-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+#source-manager .hint { font-size: 20px; margin-top: 8px; line-height: 1.45; }
 .panel h2 { font-size: 44px; margin-bottom: 32px; }
 #source-manager .panel h2:first-of-type { margin-bottom: 14px; }
 .src-input-hint { flex-shrink: 0; font-size: 24px; line-height: 1.5; min-height: 72px; color: #7fd6ff; }
