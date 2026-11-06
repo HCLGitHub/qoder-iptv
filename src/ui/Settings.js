@@ -1,6 +1,6 @@
 // 设置菜单：画面比例、解码方式、开机自动播放、字号、语言、刷新/清理、源管理
 import { KEY } from '../core/keys.js';
-import { getSettings, saveSettings, clearEpgCache } from '../core/storage.js';
+import { getSettings, saveSettings, clearEpgCache, clearCatchupProbe } from '../core/storage.js';
 import { t, resolveLang } from '../core/i18n.js';
 
 const ASPECTS = ['16:9', '4:3', 'fill'];
@@ -149,6 +149,7 @@ export class Settings {
         break;
       case 'clearEpg':
         clearEpgCache();
+        clearCatchupProbe();
         if (this.onRefreshEpg) this.onRefreshEpg();
         break;
       case 'groups':

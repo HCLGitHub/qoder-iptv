@@ -22,6 +22,7 @@ import {
 } from './fragCache.js';
 import { setRangeLanes, rangeLanes, rangeLoad, warmLanes } from './rangeLoad.js';
 import { makeVodPlaylistLoader } from './vodPlaylist.js';
+import { SpeedEngine, detectSpeed, primeAudio } from './speed/engine.js';
 
 // 可调参数集中管理，避免魔法数字散落各处
 const CFG = {
@@ -140,6 +141,15 @@ const WARM_JOB_TTL = 12000;
 const WARM_LOAD_TIMEOUT = 15000;
 const WARM_MANIFEST_TIMEOUT = 4000;
 
+// 倍速连续按键：停手这么久才按新倍率重载一次（每换一档都要重建 MSE）
+const RATE_APPLY_MS = 600;
+
+function clampRate(r) {
+  const n = Number(r);
+  if (!isFinite(n) || n <= 0) return 1;
+  return Math.min(4, Math.max(0.25, Math.round(n * 100) / 100));
+}
+
 // Map 版的有上限容器：记录 key → 时间戳，超量时淘汰最早写入的
 function boundedSet(map, key, val, max) {
   if (map.has(key)) map.delete(key);
@@ -227,10 +237,27 @@ export class Player {
     this._prefetched = new Map();
     this._warmTargets = new Map();
     this._warmRefresh = null;
+    // 回看倍速（路线 A，见 speed/engine.js）。rate 是用户要的，_appliedRate 是当前实例真在用的
+    this.rate = 1;
+    this.engine = null;
+    this._appliedRate = 1;
+    this._engineBlocked = ''; // 本节目里引擎失败过的原因，非空就不再尝试
+    this._speedCap = null;
+    this._resumeAt = 0; // 重载时要续上的内容位置；起播前 video.currentTime 还是 0，不能拿它当位置
+    this._rateTimer = null;
+    this.onRateFail = null;
+    detectSpeed().then((c) => {
+      this._speedCap = c;
+    });
 
     this.video.addEventListener('error', () => {
       // load() 已清掉错误时，排队中的旧 error 事件不属于当前媒体。
       if (!this.current || !this.video.error) return;
+      // 倍速时出的解码错误多半与改刻度/假音轨有关：先回 1× 原地重播，别急着换原生
+      if (this.engine) {
+        this.engine.fail('media');
+        return;
+      }
       this._warmPlaying = false;
       this.holdWarm();
       if (this.hls && !this._triedNativeFallback && this._canNativeHls()) {
@@ -248,6 +275,7 @@ export class Player {
         if (!this.current || !this._activePath) return;
         if (ev === 'playing' && (this.video.readyState < 2 || this.video.paused)) return;
         if (ev === 'playing') { this._netRetries = 0; this._mediaRetries = 0; } // 正常起播：清零重试计数，避免长时播放中偶发抱错累加误报
+        if (ev === 'playing') this._resumeAt = 0; // 已落到续播位置，之后 currentTime 才可信
         if (ev === 'playing') this._unmuteIfAllowed(); // 换台时若被静音兜底过，起播即恢复声音
         if (ev === 'playing') this._mark('playing');
         this._warmPlaying = ev === 'playing';
@@ -495,6 +523,12 @@ export class Player {
     if (hls) {
       try { hls.destroy(); } catch (e) {}
     }
+    // hls 先销毁（会把 src 卸掉），再拆引擎盖在 video 上的属性
+    if (this.engine) {
+      this.engine.destroy();
+      this.engine = null;
+    }
+    this._appliedRate = 1;
   }
 
   _canNativeHls() {
@@ -575,6 +609,9 @@ export class Player {
         this._destroyHls();
         this._tuningDirty = false;
       }
+      // 倍速引擎要在 attachMedia 之前换掉 MediaSource，复用的实例早就 attach 过了；
+      // 反过来，带着引擎的旧实例也不能复用到 1×。两种都得重建。
+      if (this.engine || this._wantEngine()) this._destroyHls();
       // 复用已存在的 hls.js 实例：直接换清单，省去 destroy→new→attachMedia 的
       // MSE 重建开销，连续换台起播更快（事件处理器仍在，会自动 _tryPlay）。
       if (this.hls) {
@@ -601,6 +638,8 @@ export class Player {
     const now = Date.now();
     const t0 = this._phase ? this._phase.t0 : now;
     this._destroyHls();
+    // 原生管线的 playbackRate 在 webOS 上写了不生效，倍速只能放弃
+    if (this.mode === 'catchup' && this.rate !== 1) this._dropRate('native');
     this._activePath = 'native';
     this._phase = { t0, native: now, fallback };
     this.video.removeAttribute('src');
@@ -669,8 +708,33 @@ export class Player {
       this._destroyHls();
       if (this.onError) this.onError(message);
     };
+    // 回看倍速：引擎必须在 attachMedia 之前接管，它要替换这次用的 MediaSource
+    let eng = null;
+    if (this._wantEngine()) {
+      eng = new SpeedEngine(this.video, this.rate, this._speedCap.path);
+      eng.onFail = (reason) => {
+        if (this.engine === eng) this._engineFail(reason);
+      };
+      eng.attach(hls);
+      this.engine = eng;
+      this._appliedRate = this.rate;
+      // 直播没有固定时间轴，改了刻度 hls.js 的追帧会乱；清单没封口就当直播
+      hls.on(Hls.Events.LEVEL_LOADED, (evt, data) => {
+        if (data && data.details && data.details.live) eng.fail('live');
+      });
+      hls.on(Hls.Events.BUFFER_CREATED, (evt, data) => {
+        const tracks = (data && data.tracks) || {};
+        if (!tracks.video && !tracks.audiovideo) eng.fail('no-video');
+      });
+    }
     hls.on(Hls.Events.ERROR, (evt, data) => {
       if (!data || this.hls !== hls) return;
+      // 倍速时的解码/编码错误先回 1× 重播（异步，不在 hls.js 的回调栈里销毁它）
+      if (eng && this.engine === eng &&
+          ((data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) || /codec/i.test(data.details || ''))) {
+        eng.fail('media');
+        return;
+      }
       // 非致命的编码错误：hls.js 会丢掉这条轨继续播下去。丢的是音轨时表现就是
       // 「画面正常但没声音」（IPTV 的杜比 AC-3/E-AC-3 音轨最典型），
       // 所以只要沾上 codec 就交给原生管线重播一次——电视原生解码支持杜比。
@@ -766,6 +830,17 @@ export class Player {
       // 音频编码 MSE 一个都放不出来（杜比等）→ 同样提前交给原生，
       // 免得先静音播一段再靠 ERROR 兜底回退。
       if (this._audioNeedsNative(hls) && this._fallbackToNative('audio')) return;
+      // 回看重载（换倍速/引擎回退）：直接从原来的内容位置开始取片，别从头拉一片再 seek
+      if (this.mode === 'catchup' && this._resumeAt > 0) {
+        this._aligned = true;
+        // 片头对齐会把续播点退回到片首（回看片常见 10s），换一次档就倒退一截；
+        // 这份配置只属于本实例，打上脏标记让下次载入重建，别带进直播。
+        hls.config.startOnSegmentBoundary = false;
+        this._tuningDirty = true;
+        hls.startLoad(this._resumeAt);
+        this._tryPlay();
+        return;
+      }
       // 起播位置：优先落到「缓存里已经有的那一片」，没有就传 -1 让 hls.js 自己算
       const pos = this._alignedStart(hls);
       if (pos >= 0) this._aligned = true; // 已定位，下面那个补丁就不必再管了
@@ -1610,13 +1685,15 @@ export class Player {
   playLive(channel, decoder = 'auto') {
     this.mode = 'live';
     this.current = { channel, programme: null, url: channel.url };
+    this._resetRate();
     this._load(channel.url, decoder);
   }
 
-  // 播放回看
+  // 播放回看（倍速不跨节目保留，每次都从 1× 开始）
   playCatchup(channel, programme, url, decoder = 'auto') {
     this.mode = 'catchup';
     this.current = { channel, programme, url };
+    this._resetRate();
     this._load(url, decoder);
   }
 
@@ -1637,9 +1714,104 @@ export class Player {
   // 快进/快退（秒）
   seek(deltaSec) {
     if (!isFinite(this.video.duration) && this.mode === 'live') return;
+    this.seekTo(this.position() + deltaSec);
+  }
+
+  // 跳到绝对位置（秒）。倍速引擎开着时 currentTime 已是内容时间，照常写即可
+  seekTo(sec) {
+    this._resumeAt = 0;
     try {
-      this.video.currentTime = Math.max(0, this.video.currentTime + deltaSec);
+      this.video.currentTime = Math.max(0, sec);
     } catch (e) {}
+  }
+
+  // 当前内容位置。倍速重载后、起播前 video.currentTime 还是 0，用待续的位置顶上
+  position() {
+    if (this._resumeAt > 0) return this._resumeAt;
+    return this.video.currentTime || 0;
+  }
+
+  _wantEngine() {
+    return this.mode === 'catchup' && this.rate !== 1 && !this._engineBlocked &&
+      !!(this._speedCap && this._speedCap.ok);
+  }
+
+  // 现在不能倍速的原因；空串 = 能
+  speedBlocked() {
+    if (this.mode !== 'catchup') return 'live';
+    if (this._engineBlocked) return this._engineBlocked;
+    if (this._activePath === 'native') return 'native';
+    if (!this._speedCap) return 'detect';
+    if (!this._speedCap.ok) return this._speedCap.reason || 'detect';
+    return '';
+  }
+
+  // 设回看倍速，返回实际生效的档位。每换一档都要按当前位置重建一次，所以连按只在停手后重载
+  setRate(rate) {
+    if (this.mode !== 'catchup') return 1;
+    const r = clampRate(rate);
+    const blocked = r !== 1 ? this.speedBlocked() : '';
+    if (blocked) {
+      if (this.onRateFail) this.onRateFail(blocked);
+      return this.rate;
+    }
+    this.rate = r;
+    clearTimeout(this._rateTimer);
+    this._rateTimer = setTimeout(() => this._applyRate(), RATE_APPLY_MS);
+    return r;
+  }
+
+  // 换档后还没真正按新倍率起播（等防抖 / 重载中）
+  rateSettling() {
+    return this.rate !== this._appliedRate || this._resumeAt > 0;
+  }
+
+  _applyRate() {
+    this._rateTimer = null;
+    if (this.mode !== 'catchup' || !this.current || this._activePath !== 'hls') return;
+    if (this.rate === this._appliedRate) return;
+    this._reloadAt(this.position());
+  }
+
+  _reloadAt(pos) {
+    this._resumeAt = pos > 1 ? pos : 0;
+    this._load(this.current.url, this._decoder);
+  }
+
+  // 引擎跑不下去：本节目不再尝试，回 1× 从原位置重播
+  _engineFail(reason) {
+    if (!this.engine || !this.current) return;
+    const pos = this.position(); // 必须在销毁引擎前读：之后 currentTime 就不是内容时间了
+    this._dropRate(reason);
+    this._reloadAt(pos);
+  }
+
+  _dropRate(reason) {
+    clearTimeout(this._rateTimer);
+    this._rateTimer = null;
+    this._engineBlocked = reason;
+    this.rate = 1;
+    if (this.onRateFail) this.onRateFail(reason);
+  }
+
+  _resetRate() {
+    clearTimeout(this._rateTimer);
+    this._rateTimer = null;
+    this.rate = 1;
+    this._engineBlocked = '';
+    this._resumeAt = 0;
+  }
+
+  // 在按键回调里同步调：音频上下文要用户手势唤醒，晚了倍速时会没声
+  primeAudio() {
+    try {
+      primeAudio();
+    } catch (e) {}
+  }
+
+  // 倍速引擎诊断数据；没开引擎返回 null
+  rateStats() {
+    return this.engine ? this.engine.stats() : null;
   }
 
   // 当前这一路实际用的解码方式（'hls' | 'native' | ''）。
@@ -1663,6 +1835,7 @@ export class Player {
 
   stop() {
     this._abortWarm(null);
+    this._resetRate();
     this._destroyHls();
     // 清掉当前流的记录：外部靠 player.current 判断「这一路是否还在播」，
     // 停了还留着会让「重播同一个频道」被当成无需动作而短路掉。

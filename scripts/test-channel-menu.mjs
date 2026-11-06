@@ -215,3 +215,35 @@ test('scroll events re-anchor the window by scrollTop (mouse wheel path)', () =>
   assert.equal(menu._winStart, 0);
   menu.close();
 });
+
+test('date column shows the escaped catch-up probe note and re-asks only when it opens or switches channel', () => {
+  const { el, menu, channels } = setup();
+  const probed = [];
+  menu.onProbeCatchup = (ch, opts) => probed.push({ key: ch.key, recheck: !!(opts && opts.recheck) });
+  menu.catchupNote = (ch) => 'No catch-up <' + ch.name + '>';
+  menu.open(channels, channels[0].key);
+  assert.equal(probed.length, 0, 'channel column alone does not probe');
+  menu.handleKey(39); // RIGHT -> 日期栏
+  const title = el.byId['cm-epg-title'].innerHTML;
+  assert.ok(probed.some((p) => p.key === channels[0].key));
+  assert.equal(probed[0].recheck, true, 'expanding the date column asks for a fresh check');
+  assert.match(title, /<span class="cm-cu-note">No catch-up &lt;A-0&gt;<\/span>$/);
+
+  menu.render(); // 探测结果写回后的重渲染
+  assert.equal(probed.length, 2);
+  assert.equal(probed[1].recheck, false, 'plain re-render does not ask again');
+
+  menu.handleKey(37); // LEFT -> 回到频道栏
+  menu.handleKey(39); // 再次展开
+  assert.equal(probed.at(-1).recheck, true, 'reopening asks again');
+  menu.close();
+});
+
+test('date column title has no note span when nothing to report', () => {
+  const { el, menu, channels } = setup();
+  menu.catchupNote = () => '';
+  menu.open(channels, channels[0].key);
+  menu.handleKey(39);
+  assert.doesNotMatch(el.byId['cm-epg-title'].innerHTML, /cm-cu-note/);
+  menu.close();
+});

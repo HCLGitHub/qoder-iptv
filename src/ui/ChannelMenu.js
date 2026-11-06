@@ -46,6 +46,10 @@ export class ChannelMenu {
     this.onClose = null;
     // 日期/节目单栏展开时回调，用于探测该频道所在网关支不支持回看（见 main.js）
     this.onProbeCatchup = null;
+    this.catchupNote = null;
+    // 日期栏是否已展开、上次探测的是哪个台：变化时向 main.js 要一次重探
+    this._epgShown = false;
+    this._probeChKey = null;
 
     // 鼠标：事件委托（点击选择/进入）
     this.el.addEventListener('click', (e) => this._onClick(e));
@@ -374,6 +378,8 @@ export class ChannelMenu {
   // 日期栏 + 节目单栏：焦点进入才显示（否则隐藏保持界面清爽）；内容无图，重建廉价。
   _renderDateEpg() {
     const show = this.col === COL_DATE || this.col === COL_EPG;
+    const reopen = show && !this._epgShown;
+    this._epgShown = show;
     const datesCol = this.el.querySelector('#cm-dates-col');
     const epgCol = this.el.querySelector('#cm-epg-col');
     if (datesCol) datesCol.classList.toggle('hidden', !show);
@@ -393,10 +399,20 @@ export class ChannelMenu {
 
     const ch = this._curChannel();
     // 日期栏一展开就顺手探一次回看能力：在线源没写 catchup 属性，探到了才亮回看标记。
-    // 这里每次 render 都会调到，去重和缓存在 main.js 那侧做。
-    if (ch && !ch.catchup && this.onProbeCatchup) this.onProbeCatchup(ch);
+    // 展开或换台时要求重探（上次结论是不可回看时才有意义，由 main.js 判断）。
+    const chChanged = ch && ch.key !== this._probeChKey;
+    this._probeChKey = ch ? ch.key : null;
+    if (ch && !ch.catchup && this.onProbeCatchup) {
+      this.onProbeCatchup(ch, { recheck: !!(reopen || chChanged) });
+    }
     const titleEl = this.el.querySelector('#cm-epg-title');
-    if (titleEl) titleEl.innerHTML = ch ? esc(ch.name) + ' · ' + fmtDayLabel(this._curOffset()) : t('cm.epg');
+    if (titleEl) {
+      const note = ch && this.catchupNote ? this.catchupNote(ch) : '';
+      titleEl.innerHTML = ch
+        ? esc(ch.name) + ' · ' + fmtDayLabel(this._curOffset()) +
+          (note ? `<span class="cm-cu-note">${esc(note)}</span>` : '')
+        : t('cm.epg');
+    }
     const epgListEl = this.el.querySelector('#cm-epg-list');
     if (!epgListEl) return;
     const now = Date.now();

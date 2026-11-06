@@ -133,6 +133,35 @@ body {
 .catchup-bar .cb-progress-row.focused .cb-knob { width: 32px; height: 32px; }
 /* 长按快进中：当前时间高亮，提示尚未提交的预览位置 */
 .catchup-bar .cb-cur.seeking { color: #ffcc44; }
+/* 倍速行 */
+.catchup-bar .cb-speed-row {
+  display: flex; align-items: center; gap: 24px; padding: 10px 14px; border-radius: 12px; margin-top: 10px;
+}
+.catchup-bar .cb-speed-row.focused { background: rgba(62,166,255,0.14); }
+.catchup-bar .cb-label { font-size: 28px; color: #9fb3c8; font-weight: 600; min-width: 120px; }
+.catchup-bar .cb-rates { display: flex; gap: 12px; }
+.catchup-bar .cb-rate {
+  font-size: 28px; font-weight: 700; color: #cfd6dd; padding: 6px 18px; border-radius: 10px;
+  border: 2px solid transparent; font-variant-numeric: tabular-nums;
+}
+.catchup-bar .cb-rate.on { color: #fff; background: rgba(62,166,255,0.35); border-color: #3ea6ff; }
+.catchup-bar .cb-speed-row.focused .cb-rate.on { background: #3ea6ff; }
+/* 已选但还没按新倍率起播（防抖/重载中） */
+.catchup-bar .cb-rate.on.pending { border-style: dashed; background: rgba(62,166,255,0.2); }
+.catchup-bar .cb-note {
+  flex: 1; text-align: right; font-size: 22px; color: #6b7c8f;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.catchup-bar .cb-note.warn { color: #ff9e64; }
+
+/* ===== 回看倍速角标（控制条收起后常驻） ===== */
+.speed-badge {
+  position: absolute; top: 110px; right: 60px; z-index: 46;
+  background: rgba(16,20,26,0.6); border: 3px solid #3ea6ff; border-radius: 12px;
+  padding: 6px 22px; font-size: 40px; font-weight: 800; color: #3ea6ff;
+  font-variant-numeric: tabular-nums;
+  zoom: var(--ui-zoom, 1);
+}
 
 /* ===== 右下角网速 ===== */
 /* 贴在 OSD/回看条（bottom:56~60px）下方，两者同时显示也不遮挡 */
@@ -188,6 +217,7 @@ body {
 .cm-dates { width: 210px; background: rgba(0,0,0,0.18); }
 .cm-epg { flex: 1; background: rgba(0,0,0,0.1); }
 .cm-col .cm-title { font-size: 28px; color: #808a94; padding: 24px 32px 12px; letter-spacing: 2px; }
+.cm-cu-note { display: block; margin-top: 6px; font-size: 20px; letter-spacing: 0; color: #c9a45c; word-break: break-all; }
 .cm-list { flex: 1; overflow-y: auto; padding: 0 12px 24px; }
 .cm-list::-webkit-scrollbar { width: 0; }
 /* 频道列虚拟化：窗口外行用伪元素占位（不能走容器 padding——border-box 下大 padding

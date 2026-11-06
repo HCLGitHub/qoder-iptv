@@ -58,7 +58,7 @@ const sourceManager = new SourceManager($('source-manager'));
 const groupManager = new GroupManager($('group-manager'));
 const playerTuning = new PlayerTuning($('player-tuning'));
 const deviceInfo = new DeviceInfo($('device-info'));
-const catchupBar = new CatchupBar($('catchup-bar'), player);
+const catchupBar = new CatchupBar($('catchup-bar'), player, $('speed-badge'));
 const netSpeed = new NetSpeed($('net-speed'), player);
 
 // ---- 通用 UI ----
@@ -243,7 +243,7 @@ function playLive(ch, delay = 0) {
 
   app.current = ch;
   setLastChannelKey(ch.key);
-  catchupBar.hide();
+  catchupBar.close();
   osd.show(ch);
 
   const start = () => {
@@ -582,6 +582,7 @@ channelMenu.onPlayLive = playLive;
 channelMenu.onPlayCatchup = playCatchup;
 channelMenu.onOpenSettings = () => settings.open();
 channelMenu.onProbeCatchup = probeChannelCatchup;
+channelMenu.catchupNote = catchupNote;
 
 epgGuide.onPlayLive = playLive;
 epgGuide.onPlayCatchup = playCatchup;
@@ -637,6 +638,12 @@ player.onError = (msg) => {
   if (tryFailover()) return;
   endLoading();
   toast(msg, 4000);
+};
+
+// 回看倍速走不通（换档被拒或引擎中途失败）：播放器已回 1×，这里提示原因并刷新控制条
+player.onRateFail = (reason) => {
+  toast(t('cb.speedFail', { reason: t('rate.' + reason) }), 4000);
+  catchupBar.syncRate();
 };
 
 // 分辨率/音频编码到位后补上 OSD 的画质标签
@@ -885,44 +892,105 @@ function applyProbedCatchup(host, preset) {
   return n;
 }
 
-async function probeChannelCatchup(ch) {
+// 用户每次展开节目单都想要当下的结论：上次记为不能回看时，展开就重探一次，
+// 不再干等缓存到期。正常重渲染不带 recheck，重探完写回缓存即可，不会绕成死循环。
+// 同一个网关 10 分钟内最多重探一次，防止反复展开/收起日期栏把请求打满。
+const RECHECK_GAP = 10 * 60 * 1000;
+const lastRecheck = new Map();
+
+async function probeChannelCatchup(ch, opts) {
   const url = ch && ch.url;
   const host = hostOf(url);
   if (!host) return;
   const srcId = (app.source && app.source.id) || '?';
-  const key = srcId + '::' + host;
+  const key = probeKey(host);
   if (probingCatchup.has(key)) return;
 
   // 已探过：直接套缓存结果。只有真改了东西才刷新，否则 refreshEpg -> render ->
   // 又回调到这里，会绕成死循环。
   const cached = getCatchupProbe(key);
   if (cached) {
-    if (cached.result && applyProbedCatchup(host, cached.result)) channelMenu.refreshEpg();
-    return;
+    if (cached.result) {
+      if (applyProbedCatchup(host, cached.result)) channelMenu.refreshEpg();
+      return;
+    }
+    if (!(opts && opts.recheck)) return;
+    if (Date.now() - (lastRecheck.get(key) || 0) < RECHECK_GAP) return;
   }
 
   probingCatchup.add(key);
+  lastRecheck.set(key, Date.now());
+  const trace = {
+    // 探测时本机正用 hls.js 从同一网关拉流：浏览器对同一 host 只开 6 条连接，
+    // 分片并行下载可能把它们占满，探测请求只能排队
+    busy: !!(player.hls && player.current && hostOf(player.current.url) === host)
+  };
+  let found = null;
   try {
-    const found = await probeCatchup(url);
-    setCatchupProbe(key, found);
-    if (found && applyProbedCatchup(host, found)) {
-      if (!catchupNotified.has(srcId)) {
-        catchupNotified.add(srcId);
-        const days = found.catchupDays || 7;
-        const span =
-          days >= 1
-            ? t('unit.days', { n: Math.round(days) })
-            : t('unit.hours', { n: Math.max(1, Math.round(days * 24)) });
-        toast(t('toast.catchupDetected', { span }), 3000);
-      }
-      channelMenu.refreshEpg();
-      if (epgGuide.isOpen()) epgGuide.render();
-    }
+    found = await probeCatchup(url, { trace });
   } catch (e) {
     // 探测纯属加分项，失败就当不支持，绝不影响正常看直播
-  } finally {
-    probingCatchup.delete(key);
+    trace.reason = 'live';
+    trace.live = 'net';
+    trace.transient = true;
   }
+  probingCatchup.delete(key);
+  setCatchupProbe(key, found, trace);
+  if (found && applyProbedCatchup(host, found)) {
+    if (!catchupNotified.has(srcId)) {
+      catchupNotified.add(srcId);
+      toast(t('toast.catchupDetected', { span: catchupSpan(found.catchupDays) }), 3000);
+    }
+    channelMenu.refreshEpg();
+    if (epgGuide.isOpen()) epgGuide.render();
+  } else if (getCatchupProbe(key)) {
+    // 只为更新状态文字刷新；缓存没写进去（存储满）就别刷，否则 render 又会立刻重探
+    channelMenu.refreshEpg();
+  }
+}
+
+function probeKey(host) {
+  return ((app.source && app.source.id) || '?') + '::' + host;
+}
+
+function catchupSpan(days) {
+  const d = days || 7;
+  return d >= 1
+    ? t('unit.days', { n: Math.round(d) })
+    : t('unit.hours', { n: Math.max(1, Math.round(d * 24)) });
+}
+
+function probeErrText(e) {
+  if (!e) return '';
+  if (/^http /.test(e)) return e.toUpperCase();
+  return t('cu.err.' + e);
+}
+
+// 节目单标题后面的回看探测状态，电视上没法看日志，靠它说清没回看的原因
+function catchupNote(ch) {
+  const host = hostOf(ch && ch.url);
+  if (!host) return '';
+  const key = probeKey(host);
+  if (probingCatchup.has(key)) return t('cu.probing');
+  const c = getCatchupProbe(key);
+  if (!c) return '';
+  const d = c.diag;
+  if (c.result) return t('cu.ok', { span: catchupSpan(c.result.catchupDays) }) + probeTail(d);
+  let why = t('cu.why.old');
+  if (d && d.reason === 'live') why = t('cu.why.live', { err: probeErrText(d.live) });
+  else if (d && d.reason === 'nomatch') why = t('cu.why.nomatch');
+  else if (d && d.reason === 'mcast') why = t('cu.why.mcast');
+  return t('cu.fail', { why }) + probeTail(d);
+}
+
+// 诊断尾巴：各步结果、★=同网关正被 hls.js 占用、时区、总耗时
+function probeTail(d) {
+  if (!d) return '';
+  const parts = (d.steps || []).slice();
+  if (d.busy) parts.push('★');
+  if (typeof d.tz === 'number') parts.push('tz' + (d.tz >= 0 ? '+' : '') + d.tz);
+  if (d.ms) parts.push((d.ms / 1000).toFixed(1) + 's');
+  return parts.length ? ' [' + parts.join(' ') + ']' : '';
 }
 
 // ---- 启动 ----

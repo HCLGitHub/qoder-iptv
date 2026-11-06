@@ -23,6 +23,8 @@ export class EpgGuide {
     this.onClose = null;
     // 渲染时回调，用于探测该频道所在网关支不支持回看（见 main.js）
     this.onProbeCatchup = null;
+    // 上次探测的是哪个台：打开节目单或换台时向 main.js 要一次重探
+    this._probeChKey = null;
 
     // 鼠标：事件委托（点击选择/进入）
     this.el.addEventListener('click', (e) => this._onClick(e));
@@ -60,6 +62,7 @@ export class EpgGuide {
     this.chanIdx = idx >= 0 ? idx : 0;
     this.progIdx = 0;
     this._loadProg();
+    this._probeChKey = null;
     this.el.classList.remove('hidden');
     this.render();
   }
@@ -176,8 +179,13 @@ export class EpgGuide {
     const el = this.el.querySelector('#eg-prog-col');
     if (!el) return;
     const ch = this._curChannel();
-    // 顺手探一次回看能力（去重和缓存在 main.js 那侧做）
-    if (ch && !ch.catchup && this.onProbeCatchup) this.onProbeCatchup(ch);
+    // 顺手探一次回看能力（去重和缓存在 main.js 那侧做）；打开节目单或换台时要求重探，
+    // 上次结论是不可回看时才会真的发请求
+    const chChanged = ch && ch.key !== this._probeChKey;
+    this._probeChKey = ch ? ch.key : null;
+    if (ch && !ch.catchup && this.onProbeCatchup) {
+      this.onProbeCatchup(ch, { recheck: !!chChanged });
+    }
     const now = Date.now();
     el.innerHTML = this.progList.length
       ? this.progList

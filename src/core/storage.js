@@ -163,22 +163,22 @@ export function clearEpgCache() {
 }
 
 // ---- 回看能力探测结果缓存 ----
-// 时移能力是「网关级」的：同一个网关下的频道要么都能回看，要么都不能，
+// 时移能力是「网关级」：同一个网关下的频道要么都能回看，要么都不能，
 // 所以 key 用「源id::网关host」而不是频道，一次探测全源受益。
-// 成功缓存久一点，失败短一点（换套餐/服务端恢复都有机会重新探到）。
-export const CATCHUP_TTL_OK = 7 * 24 * 3600 * 1000;
+// 成功结果缓存 3 天（太久会一直沿用旧结论），失败 6 小时，临时失败只记 5 分钟。
+export const CATCHUP_TTL_OK = 3 * 24 * 3600 * 1000;
 export const CATCHUP_TTL_FAIL = 6 * 3600 * 1000;
+// 探测途中碰上超时/请求失败：结论不可靠，过几分钟就该重探
+export const CATCHUP_TTL_RETRY = 5 * 60 * 1000;
 
 export function getCatchupProbe(key) {
   const v = read('cp:' + key, null);
   if (!v || !v.expire || v.expire < Date.now()) return null;
-  return v; // { result: {catchup,catchupSource}|null, expire }
+  return v; // { result: {catchup,catchupSource,catchupDays}|null, expire, diag? }
 }
-export function setCatchupProbe(key, result) {
-  write('cp:' + key, {
-    result: result || null,
-    expire: Date.now() + (result ? CATCHUP_TTL_OK : CATCHUP_TTL_FAIL)
-  });
+export function setCatchupProbe(key, result, diag) {
+  const ttl = diag && diag.transient ? CATCHUP_TTL_RETRY : result ? CATCHUP_TTL_OK : CATCHUP_TTL_FAIL;
+  write('cp:' + key, { result: result || null, expire: Date.now() + ttl, diag: diag || null });
 }
 export function clearCatchupProbe() {
   try {
