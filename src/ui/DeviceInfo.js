@@ -4,7 +4,7 @@
 // 不上屏就无从判断某个系统接口到底通不通。
 import { KEY } from '../core/keys.js';
 import Hls from 'hls.js';
-import { collectDevice } from '../core/deviceInfo.js';
+import { collectDevice, probeMseHevcLevels } from '../core/deviceInfo.js';
 import { esc } from '../core/util.js';
 import { t } from '../core/i18n.js';
 
@@ -23,8 +23,9 @@ function explainErr(err) {
 }
 
 export class DeviceInfo {
-  constructor(el) {
+  constructor(el, player) {
     this.el = el;
+    this.player = player;
     this.info = null;
     this.loading = false;
     // 原始返回默认收起，只有某项取不到时才需要翻它
@@ -107,6 +108,28 @@ export class DeviceInfo {
     );
   }
 
+  // 解码能力诊断：auto 档把 4K 频道推给原生的依据只有 Player._mseHevcOk 的 L150
+  // 探测，这里把三档声明能力和当前流的真实编码并排摊开，真机上一眼就能判断
+  // 该不该扩档（或该不该让 hls.js 先试）。
+  _mediaRows(row) {
+    const caps = probeMseHevcLevels();
+    const hit = caps.filter((c) => c.mime)[0];
+    const capsText = caps.map((c) => c.tag + (c.mime ? ' ✓' : ' ✗')).join(' · ');
+    const p = this.player;
+    const mi = (p && p.mediaInfo) || {};
+    const path = p && typeof p.activePath === 'function' ? p.activePath() : '';
+    const raw = mi.videoCodec || '';
+    const kind = /hvc1|hev1|hevc/i.test(raw) ? 'HEVC'
+      : /avc1|avc|h264/i.test(raw) ? 'H.264' : raw;
+    const size = mi.width && mi.height ? ' · ' + mi.width + '×' + mi.height : '';
+    const pathText = path === 'hls' ? t('di.pathHls') : path === 'native' ? t('di.pathNative') : '';
+    const note = [pathText, raw && raw !== kind ? raw : ''].filter(Boolean).join(' · ');
+    return (
+      row(t('di.hevcCaps'), esc(capsText), esc(hit ? hit.mime : '')) +
+      row(t('di.curCodec'), esc(kind ? kind + size : t('di.noChannel')), esc(note))
+    );
+  }
+
   render() {
     const d = this.info;
     const row = (label, value, note) =>
@@ -131,6 +154,7 @@ export class DeviceInfo {
         row(t('di.firmware'), d.firmware ? esc(d.firmware) : '—') +
         (d.sysErr ? row(t('di.sysFailed'), esc(explainErr(d.sysErr))) : '') +
         row(t('di.appVersion'), esc(typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '—')) +
+        this._mediaRows(row) +
         // 开源组件署名。hls.js 是 Apache-2.0，随包分发要保留声明——放在这里而不是
         // 只塞个文本文件进包，是因为电视上没人会去翻文件，上屏才算真的告知。
         // 版本号取 Hls.version（真实值），别硬编：依赖一升级硬编的那个就成了假信息。

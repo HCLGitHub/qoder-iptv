@@ -11,6 +11,41 @@ const RETRY_DELAY = 60 * 1000; // 失败后最多冷却一分钟，由下一次�
 // tvg-shift 平移视图缓存上限：声明时移的源极少，超限整体清掉即可，不做事后逐条淘汰
 const SHIFTED_MAX = 500;
 
+// 央视各频道的中文名 -> 台号。XMLTV 的 display-name 常写成「中央电视台综合频道」，
+// 而源里的台名可能已经是「CCTV1」；不映射这两者永远匹配不上。
+const CCTV_BY_NAME = {
+  综合: 1, 财经: 2, 综艺: 3, 中文国际: 4, 体育: 5, 电影: 6, 国防军事: 7, 军事: 7,
+  电视剧: 8, 纪录: 9, 科教: 10, 戏曲: 11, 社会与法: 12, 新闻: 13, 少儿: 14,
+  音乐: 15, 奥林匹克: 16, 农业农村: 17, 农业: 17
+};
+
+// EPG 台名归一化：第三方源与 XMLTV 对同一个台的写法差异极大
+// （CCTV-1 / CCTV1 综合 / 深圳卫视高清 / 深圳卫视 4K），精确比对几乎匹配不上。
+// 这里只做「可证明等价」的归一：去空格标点、去画质后缀、统一央视台号。
+export function normalizeEpgName(name) {
+  if (!name) return '';
+  let s = String(name);
+  try { s = s.normalize('NFKC'); } catch (e) {}
+  s = s.toLowerCase().replace(/[\s\-_·・()（）\[\]【】]/g, '');
+  // 画质后缀不是台名的一部分；先长后短，避免「超高清」只被吃掉「高清」
+  s = s.replace(/(超高清|高清|标清|蓝光|uhd|fhd|hd|sd|4k|8k|h265|hevc|hdr)/g, '');
+  const cen = /^中央(?:电视台)?(?:cctv)?(\d{1,2})(?:\+)?(?:频道)?$/.exec(s);
+  if (cen) return 'cctv' + Number(cen[1]);
+  const cenStation = /^中央(?:电视台)?(\d{1,2})台$/.exec(s);
+  if (cenStation) return 'cctv' + Number(cenStation[1]);
+  const named = /^中央(?:电视台)?(.+?)(?:频道)?$/.exec(s);
+  if (named && CCTV_BY_NAME[named[1]]) return 'cctv' + CCTV_BY_NAME[named[1]];
+  const m = /^cctv(\d{1,2})(\+)?(.*)$/.exec(s);
+  if (m) {
+    // 台号后面跟的是「频道名」就丢掉（CCTV5 体育 = CCTV5），
+    // 是地区/语言变体就保留（CCTV4 欧洲 ≠ CCTV4 美洲，节目表不同）。
+    const rest = m[3] || '';
+    const channelName = /^(综合|财经|综艺|中文国际|国际|体育赛事|体育|电影|国防军事|军事|电视剧|纪录|科教|戏曲|社会与法|新闻|少儿|音乐|奥林匹克|农业农村|农业|频道)$/;
+    return 'cctv' + Number(m[1]) + (m[2] || '') + (rest && !channelName.test(rest) ? rest : '');
+  }
+  return s;
+}
+
 // 探测 EPG 类型：显式 type 优先，其次按 URL 特征
 // 猜错的代价不对称：DIYP 接口的地址常常只是「主机:端口/」，看不出任何特征，
 // 会落到 xmltv 分支上白拉一场。所以 _refreshXmltv 里还有一道「拉到了但一个节目
@@ -42,6 +77,7 @@ class EpgStore {
     // tvg-shift 平移视图：'shift|key' -> { src, out }。以底层数组身份做失效——
     // _mergeDay/_ingestRaw 替换数组后视图自动重建，无需额外版本号。
     this._shifted = new Map();
+    this._nameIndex = null; // 归一化台名 -> programme key，见 _buildNameIndex
     this._forceRefresh = false;
     this.onUpdate = null; // 新数据到达回调（由上层挂 refreshVisible）
     this._updTimer = null;
@@ -58,6 +94,7 @@ class EpgStore {
     this.retryAfter.clear();
     this.pending.clear();
     this._shifted.clear();
+    this._nameIndex = null;
     this.loaded = false;
     this.version++;
     // 换源时把待触发的刷新一并取消，避免残留定时器对着新数据空刷一次
@@ -112,6 +149,7 @@ class EpgStore {
       }
       this.channels = channels;
       this.programmes = programmes;
+      this._buildNameIndex();
       this.loaded = true;
       this.version++;
       const raw = {
@@ -135,8 +173,27 @@ class EpgStore {
     (raw.programmes || []).forEach(([id, list]) => programmes.set(id, list));
     this.channels = channels;
     this.programmes = programmes;
+    this._buildNameIndex();
     this.loaded = true;
     this.version++;
+  }
+
+  // 归一化台名索引：display-name / channel id / programme key 三种写法都进去，
+  // 只映射到真有节目数据的 key。建索引是一次的，查询是 O(1)。
+  _buildNameIndex() {
+    const idx = new Map();
+    const add = (name, key) => {
+      if (!name) return;
+      const n = normalizeEpgName(name);
+      if (!n || idx.has(n) || !this.programmes.has(key)) return;
+      idx.set(n, key);
+    };
+    for (const [id, c] of this.channels) {
+      add(c && c.name, id);
+      add(id, id);
+    }
+    for (const key of this.programmes.keys()) add(key, key);
+    this._nameIndex = idx;
   }
 
   // ---------- 键解析 ----------
@@ -148,11 +205,13 @@ class EpgStore {
   _key(channel) {
     if (!channel) return '';
     if (this.mode === 'diyp') return this._diypName(channel);
-    // xmltv：优先 tvg-id，其次频道名
+    // xmltv：优先 tvg-id，其次频道名，最后按归一化台名兜底
     const id = channel.tvgId;
     if (id && this.programmes.has(id)) return id;
     const nm = this._diypName(channel);
     if (nm && this.programmes.has(nm)) return nm;
+    const hit = this._nameIndex && this._nameIndex.get(normalizeEpgName(nm));
+    if (hit) return hit;
     return id || nm;
   }
 

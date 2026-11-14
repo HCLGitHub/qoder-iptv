@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChannelMenu } from '../src/ui/ChannelMenu.js';
+import { logoHtml, logoText, markLogoFailed } from '../src/core/util.js';
 
 const CHAN_ROW_H = 100; // 与 ChannelMenu.js 内常量一致
 const ROWS = 5000;
@@ -245,5 +246,56 @@ test('date column title has no note span when nothing to report', () => {
   menu.open(channels, channels[0].key);
   menu.handleKey(39);
   assert.doesNotMatch(el.byId['cm-epg-title'].innerHTML, /cm-cu-note/);
+  menu.close();
+});
+
+test('text logo derives a short code from the channel name', () => {
+  assert.equal(logoText('CCTV-1 综合'), 'CCTV1');
+  assert.equal(logoText('CCTV-5+ 体育赛事'), 'CCTV5+');
+  assert.equal(logoText('湖南卫视'), '湖南');
+  assert.equal(logoText('【4K】超高清'), '4K');
+  assert.equal(logoText('BBC One'), 'BBC');
+  assert.equal(logoText('  '), '?');
+});
+
+test('logo html keeps a text tile behind the image so a failed load is not an empty box', () => {
+  const plain = logoHtml({ name: '湖南卫视' });
+  assert.doesNotMatch(plain, /<img/);
+  assert.match(plain, /^<span class="logo-txt logo-c\d w-s">湖南<\/span>$/);
+  const withImg = logoHtml({ name: 'CCTV-16 奥林匹克', logo: 'http://s/a.png?"x' });
+  assert.match(withImg, /^<img src="http:\/\/s\/a\.png\?&quot;x"[^>]*onerror="this\.remove\(\)"[^>]*\/><span class="logo-txt logo-c\d w-l">CCTV16<\/span>$/);
+});
+
+test('channel column hides the logo slot only when the whole group has no logo URL', () => {
+  const { el, menu, channels } = setup();
+  const list = el.byId['cm-chan-list'];
+  menu.open(channels, channels[0].key);
+  assert.equal(list.classList.contains('no-logo'), true);
+  menu.close();
+  const withLogo = channels.map((ch, i) => (i === 7 ? { ...ch, logo: 'http://s/logo.png' } : ch));
+  menu.open(withLogo, withLogo[0].key);
+  assert.equal(list.classList.contains('no-logo'), false, 'one logo URL keeps the column');
+  menu.handleKey(37); // LEFT -> 分组列
+  menu.handleKey(40); // DOWN -> B 组（无台标）
+  assert.equal(list.classList.contains('no-logo'), true);
+  menu.close();
+});
+
+test('logo column collapses when every visible logo URL has failed to load', () => {
+  const { el, menu, channels } = setup();
+  const list = el.byId['cm-chan-list'];
+  const urls = [];
+  const withLogo = channels.map((ch, i) => {
+    if (i >= 19) return ch; // 只有首屏窗口内的行参与判定
+    const logo = 'http://broken.test/' + ch.key + '.png';
+    urls.push(logo);
+    return { ...ch, logo };
+  });
+  menu.open(withLogo, withLogo[0].key);
+  assert.equal(list.classList.contains('no-logo'), false, 'unseen URLs still count as showable');
+  for (const u of urls) markLogoFailed(u);
+  menu.render();
+  assert.equal(list.classList.contains('no-logo'), true);
+  assert.doesNotMatch(`<div class="logo">${logoHtml({ name: '湖南卫视', logo: urls[0] })}</div>`, /<img/, 'failed URLs are not requested again');
   menu.close();
 });

@@ -78,7 +78,7 @@ export function setActiveSourceId(id) {
 const DEFAULT_SETTINGS = {
   aspect: '16:9', // 16:9 | 4:3 | fill
   // 默认自动：普通频道用 hls.js（真机实测比电视原生 HLS 管线更流畅），
-  // 4K/HEVC 频道自动改用原生硬件解码（MSE 不支持 HEVC）
+  // 4K/HEVC 频道在 MSE 探测不到 HEVC 时改用原生硬件解码（MSE 声明支持不等于能解该路流）
   decoder: 'auto', // auto | native | hls
   autoPlayLast: true,
   showNetSpeed: false, // 右下角显示当前频道的加载网速
@@ -145,6 +145,28 @@ export function getLastChannelKey() {
 }
 export function setLastChannelKey(key) {
   write('lastChannel', key);
+}
+
+// ---- 每个频道上次成功播放的源 ----
+// 源地址随时会失效，记住「上次能播的那条」能跳过已经死掉的备用源。
+// 单张映射存全部频道，超过上限按写入顺序淘汰（对象键顺序即插入顺序）。
+const SRCMEM_MAX = 400;
+export function getLastSourceIdx(key) {
+  const map = read('lastSource', null);
+  const v = map && typeof map === 'object' && !Array.isArray(map) ? map[key] : undefined;
+  return Number.isInteger(v) && v >= 0 ? v : 0;
+}
+export function setLastSourceIdx(key, idx) {
+  if (!key || !Number.isInteger(idx) || idx < 0) return;
+  const stored = read('lastSource', null);
+  const map = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  delete map[key];
+  map[key] = idx;
+  const keys = Object.keys(map);
+  if (keys.length > SRCMEM_MAX) {
+    keys.slice(0, keys.length - SRCMEM_MAX).forEach((k) => delete map[k]);
+  }
+  write('lastSource', map);
 }
 
 // ---- EPG 缓存 ----

@@ -188,7 +188,7 @@ const DICT = {
     'toast.unfaved': '已取消收藏',
     'toast.offline': '网络已断开',
     'toast.online': '网络已恢复，正在重连…',
-    'toast.tryingBackup': '正在尝试备用源 {n}/{total}…',
+    'toast.tryingBackup': '正在尝试备用源 {n}/{total}：{label}',
     'toast.channelUnavailable': '该频道暂时无法播放',
 
     // fetch 错误说明
@@ -213,6 +213,7 @@ const DICT = {
     'cm.epg': '节目单',
     'cm.group': '分组',
     'cm.channels': '频道（{n}）',
+    'cm.groupChannels': '{g}（{n}）',
 
     // EPG 指南
     'eg.catchup': '⟲可回看',
@@ -306,6 +307,11 @@ const DICT = {
     'di.firmware': '固件',
     'di.sysFailed': '取系统信息失败',
     'di.appVersion': '应用版本',
+    'di.hevcCaps': 'MSE HEVC 解码',
+    'di.curCodec': '当前频道编码',
+    'di.noChannel': '未在播放',
+    'di.pathHls': 'hls.js',
+    'di.pathNative': '原生',
     'di.openSource': '开源组件',
     'di.again': '↻ 重新检测',
     'di.rawShow': '▼ 原始返回',
@@ -524,7 +530,7 @@ const DICT = {
     'toast.unfaved': 'Removed from favorites',
     'toast.offline': 'Network disconnected',
     'toast.online': 'Network restored, reconnecting…',
-    'toast.tryingBackup': 'Trying backup source {n}/{total}…',
+    'toast.tryingBackup': 'Trying backup source {n}/{total}: {label}',
     'toast.channelUnavailable': 'This channel is currently unavailable',
 
     // fetch errors
@@ -550,6 +556,7 @@ const DICT = {
     'cm.epg': 'EPG',
     'cm.group': 'Groups',
     'cm.channels': 'Channels ({n})',
+    'cm.groupChannels': '{g} ({n})',
 
     // EPG Guide
     'eg.catchup': '⟲Catch-up',
@@ -643,6 +650,11 @@ const DICT = {
     'di.firmware': 'Firmware',
     'di.sysFailed': 'System info lookup failed',
     'di.appVersion': 'App Version',
+    'di.hevcCaps': 'MSE HEVC decode',
+    'di.curCodec': 'Current channel codec',
+    'di.noChannel': 'Not playing',
+    'di.pathHls': 'hls.js',
+    'di.pathNative': 'native',
     'di.openSource': 'Open Source',
     'di.again': '↻ Detect Again',
     'di.rawShow': '▼ Raw Output',

@@ -13,6 +13,8 @@ import {
   toggleFavorite,
   getLastChannelKey,
   setLastChannelKey,
+  getLastSourceIdx,
+  setLastSourceIdx,
   getCatchupProbe,
   setCatchupProbe
 } from './core/storage.js';
@@ -57,7 +59,7 @@ const settings = new Settings($('settings'));
 const sourceManager = new SourceManager($('source-manager'));
 const groupManager = new GroupManager($('group-manager'));
 const playerTuning = new PlayerTuning($('player-tuning'));
-const deviceInfo = new DeviceInfo($('device-info'));
+const deviceInfo = new DeviceInfo($('device-info'), player);
 const catchupBar = new CatchupBar($('catchup-bar'), player, $('speed-badge'));
 const netSpeed = new NetSpeed($('net-speed'), player);
 
@@ -171,6 +173,10 @@ function endLoading() {
 // 起播看门狗触发：到点仍未出画面 → 先自动切备用源，源试完再报错停转圈
 function onStartTimeout() {
   startWatchdog = null;
+  if (player.video.paused && player.video.readyState >= 2 && !player.video.error) {
+    startWatchdog = setTimeout(onStartTimeout, START_TIMEOUT_MS);
+    return;
+  }
   if (tryFailover()) return;
   zapStarting = false;
   clearTimeout(stallTimer);
@@ -191,7 +197,11 @@ function tryFailover() {
   beginLoading();
   player.playLive(ch, app.settings.decoder);
   schedulePrefetch();
-  toast(t('toast.tryingBackup', { n: ch.sourceIdx + 1, total: ch.sources.length }), 2500);
+  toast(t('toast.tryingBackup', {
+    n: ch.sourceIdx + 1,
+    total: ch.sources.length,
+    label: ch.sources[ch.sourceIdx].label
+  }), 2500);
   return true;
 }
 
@@ -227,6 +237,23 @@ function isPlayingLive(ch) {
   return true;
 }
 
+// 上次成功播过的源优先。记忆越界（源列表变短）时保持 0。
+function useRememberedSource(ch) {
+  if (!ch || !ch.sources || ch.sources.length < 2) return;
+  const idx = getLastSourceIdx(ch.key);
+  if (idx <= 0 || idx >= ch.sources.length) return;
+  ch.sourceIdx = idx;
+  applyActiveSource(ch);
+}
+
+// 出画面才算数：记的是「能播」，不是「用户点过」。
+function rememberPlayingSource() {
+  const ch = app.current;
+  if (!ch || !ch.sources || ch.sources.length < 2 || player.isCatchup()) return;
+  if (getLastSourceIdx(ch.key) === ch.sourceIdx) return;
+  setLastSourceIdx(ch.key, ch.sourceIdx);
+}
+
 // playLive(ch, delay)：delay>0 时先只更新 OSD/状态，延迟后才真正起流。
 // 用于连按上下键快速翻台——中间台不会各自发起一次加载，只加载最终停留的那个台。
 function playLive(ch, delay = 0) {
@@ -242,6 +269,7 @@ function playLive(ch, delay = 0) {
   }
 
   app.current = ch;
+  useRememberedSource(ch);
   setLastChannelKey(ch.key);
   catchupBar.close();
   osd.show(ch);
@@ -296,9 +324,12 @@ function prefetchNeighbors() {
     console.log('[warm] neighbours of ' + app.current.name + ': ' + next.name + ' / ' + prev.name);
   } catch (e) {}
   // Player 按登记顺序串行取最新清单，先照顾上次翻台的方向。
+  // 预热的清单/分片请求也要带邻台自己的源级头，所以把 channel.headers 一并传下去。
   const forward = lastZapDir >= 0;
-  player.prefetch(forward ? next.url : prev.url);
-  player.prefetch(forward ? prev.url : next.url);
+  const first = forward ? next : prev;
+  const second = forward ? prev : next;
+  player.prefetch(first.url, false, first.headers);
+  player.prefetch(second.url, false, second.headers);
 }
 
 // 上一次翻台的方向（+1 = CH+/下一个，-1 = CH-/上一个），供预热排序用
@@ -654,10 +685,15 @@ osd.getLatency = () => player.getLiveLatency();
 // hls.js 的 playing 可以结束起播；webOS 原生 HLS 的 playing 可能只有一张静止首帧，
 // 必须等媒体时间真实推进。播放途中的 waiting 仍延迟 1.5 秒显示，避免短抖动打扰。
 player.onStateChange = (ev) => {
-  if (ev === 'nativefallback') {
+  if (ev === 'nativefallback' || ev === 'hlsfallback') {
     beginLoading(true);
+  } else if (ev === 'nativereconnect') {
+    // 原生管线播放途中解码出错、播放器自动重载同一地址：只转圈等它接上。
+    // 不启动换台看门狗——重试次数和超时由播放器自己管，超了会走 onError 切备用源。
+    loading(true);
   } else if (ev === 'startupmoving' ||
       (ev === 'playing' && (player.activePath() !== 'native' || !zapStarting))) {
+    rememberPlayingSource();
     if (zapStarting && zapStartAt) {
       const warm = player.warmStatus();
       netSpeed.setStartupMs(Date.now() - zapStartAt, warm, player.startupPhases());

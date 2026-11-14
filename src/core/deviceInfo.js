@@ -207,3 +207,26 @@ export async function collectDevice() {
   try { out.ua = navigator.userAgent || ''; } catch (e) {}
   return out;
 }
+
+// MSE 对 HEVC 的声明能力，按 1080p 与 4K 的常用档位分开探。
+// isTypeSupported 只是能力声明，不代表某一路流真能解；这里用来解释 auto 档
+// 为什么把 4K 频道推给原生（Player._mseHevcOk 只看 L150，档位不同结论可能相反）。
+export function probeMseHevcLevels() {
+  const levels = [
+    ['L120', 'hvc1.1.6.L120.90'],
+    ['L123', 'hvc1.1.6.L123.B0'],
+    ['L150', 'hvc1.1.6.L150.90']
+  ];
+  const mse = typeof MediaSource !== 'undefined' ? MediaSource : null;
+  return levels.map(([tag, codec]) => {
+    let mime = '';
+    if (mse && typeof mse.isTypeSupported === 'function') {
+      for (const c of [codec, codec.replace(/^hvc1/, 'hev1')]) {
+        try {
+          if (mse.isTypeSupported('video/mp4; codecs="' + c + '"')) { mime = c; break; }
+        } catch (e) {}
+      }
+    }
+    return { tag, mime };
+  });
+}

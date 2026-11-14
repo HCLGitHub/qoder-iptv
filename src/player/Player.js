@@ -1,6 +1,7 @@
 // 播放器：优先原生 <video>，HLS 不支持时回退 hls.js
 import Hls from 'hls.js';
 import { proxied, resolveMediaUrl } from '../core/net.js';
+import { rememberHeaders, headersFor, applyHeaders, withHeaders } from '../core/reqHeaders.js';
 import { t } from '../core/i18n.js';
 import { toHlsConfig, getTuning } from './tuning.js';
 import {
@@ -27,6 +28,14 @@ import { SpeedEngine, detectSpeed, primeAudio } from './speed/engine.js';
 // 可调参数集中管理，避免魔法数字散落各处
 const CFG = {
   maxErrorRetries: 3, // 单次载入内网络/解码错误的连续重试上限（超过则报错）
+  // 原生管线（4K/HEVC 基本都走这条）没有 hls.js 的 recoverMediaError：
+  // 源抖动或脏包会直接抛 MEDIA_ERR_DECODE，然后只能切源。先按直播边缘重载同一地址，
+  // 清单会重新下发（带签名的源也会拿到新地址），连续失败才交给上层切备用源。
+  nativeRetry: {
+    max: 2,
+    delayMs: 1200, // 第 n 次等 delayMs × n，给源端一点回神时间
+    windowMs: 30000 // 距上次出错超过这个时长算新问题，重新计数
+  },
   nativeCacheMax: 128, // “需原生解码”地址记忆的上限（超量 LRU 淘汰最早的）
   prefetchCacheMax: 48, // 预热去重集合上限（超量 LRU 淘汰最早的）
   startup: {
@@ -228,6 +237,10 @@ export class Player {
     this.onStateChange = null;
     this.onMediaInfo = null; // 分辨率/编码信息变化（OSD 画质标签用）
     this._warmHold = true;
+    this._nativeRetries = 0;
+    this._nativeErrAt = 0;
+    this._nativeReloadTimer = null;
+    this._playedOnce = false;
     this._warmPlaying = false;
     this._warmGeneration = 0; // 换台/停止后，旧清单响应不得重新排入预热
     this._fragDuration = 0;
@@ -252,7 +265,8 @@ export class Player {
 
     this.video.addEventListener('error', () => {
       // load() 已清掉错误时，排队中的旧 error 事件不属于当前媒体。
-      if (!this.current || !this.video.error) return;
+      if (!this.current || !this.video.error ||
+          (this._activePath === 'native' && this._startup && this._startup.failed)) return;
       // 倍速时出的解码错误多半与改刻度/假音轨有关：先回 1× 原地重播，别急着换原生
       if (this.engine) {
         this.engine.fail('media');
@@ -260,10 +274,16 @@ export class Player {
       }
       this._warmPlaying = false;
       this.holdWarm();
+      // 原生管线播放途中被脏包/断流打断：先重载同一地址接回直播边缘，别直接切源
+      if (this._activePath === 'native') {
+        if (!this._playedOnce && this._nativeStartupFailed()) return;
+        if (this._retryNativeMediaError(this.video.error)) return;
+      }
       if (this.hls && !this._triedNativeFallback && this._canNativeHls()) {
         if (this._fallbackToNative('media')) return;
       }
       this._sampleStartup();
+      if (this._activePath === 'native' && this._startup) this._startup.failed = true;
       if (this.onError) this.onError(this._describeError());
     });
     // 实际解码尺寸：元数据就绪、画面尺寸变化、起播时各读一次
@@ -272,9 +292,10 @@ export class Player {
     });
     ['playing', 'waiting', 'pause', 'ended'].forEach((ev) => {
       this.video.addEventListener(ev, () => {
-        if (!this.current || !this._activePath) return;
+        if (!this.current || !this._activePath || (this._startup && this._startup.failed)) return;
         if (ev === 'playing' && (this.video.readyState < 2 || this.video.paused)) return;
         if (ev === 'playing') { this._netRetries = 0; this._mediaRetries = 0; } // 正常起播：清零重试计数，避免长时播放中偶发抱错累加误报
+        if (ev === 'playing' && this._activePath !== 'native') this._playedOnce = true;
         if (ev === 'playing') this._resumeAt = 0; // 已落到续播位置，之后 currentTime 才可信
         if (ev === 'playing') this._unmuteIfAllowed(); // 换台时若被静音兜底过，起播即恢复声音
         if (ev === 'playing') this._mark('playing');
@@ -303,7 +324,7 @@ export class Player {
     if (!this._phase || this._startup || !['hls', 'native'].includes(this._activePath)) return;
     const now = Date.now();
     const state = this._startup = {
-      at: now, position: this.video.currentTime, stillAt: now, progress: 0,
+      at: now, position: this.video.currentTime, stillAt: now, progress: 0, pausedMs: 0,
       reason: 'buffer', nudged: false, attempted: false, done: false
     };
     this._sampleStartup();
@@ -352,7 +373,7 @@ export class Player {
     }
     state.position = pos;
     state.at = now;
-    if (v.error || v.ended || now - (phase.native || phase.t0) >= cfg.timeoutMs) {
+    if (v.error || v.ended) {
       state.done = true;
       state.reason = v.error ? 'error' : 'timeout';
       this._clearStartup();
@@ -363,7 +384,23 @@ export class Player {
       state.reason = 'moving';
       state.done = true;
       this._clearStartup();
-      if (native && this.onStateChange) this.onStateChange('startupmoving');
+      if (native) {
+        this._playedOnce = true;
+        if (this.onStateChange) this.onStateChange('startupmoving');
+      }
+      return;
+    }
+    if (native && v.paused && v.readyState >= 2) state.pausedMs += elapsed * 1000;
+    if (now - (phase.native || phase.t0) - state.pausedMs >= cfg.timeoutMs) {
+      state.done = true;
+      state.reason = 'timeout';
+      this._clearStartup();
+      if (native && this.mode === 'live') {
+        if (this._nativeStartupFailed()) return;
+        state.failed = true;
+        this.video.pause();
+        if (this.onError) this.onError(t('toast.channelUnavailable'));
+      }
       return;
     }
     const ahead = this._bufferAhead();
@@ -571,6 +608,11 @@ export class Player {
   _load(rawUrl, decoder = 'auto') {
     this._warmTuning = getTuning();
     this._clearStartup();
+    clearTimeout(this._nativeReloadTimer);
+    this._nativeReloadTimer = null;
+    this._nativeRetries = 0;
+    this._nativeErrAt = 0;
+    this._playedOnce = false;
     this._startup = null;
     this._phase = { t0: Date.now() }; // 起播耗时分解的计时起点（各阶段标记见 _mark）
     this._decoder = decoder; // 预热要据此判断「邻台切过去会不会走原生」（见 _willUseNative）
@@ -584,10 +626,11 @@ export class Player {
     const url = proxied(rawUrl);
     this._rawUrl = rawUrl; // 原始地址（用作“需原生解码”的记忆键）
     this._proxiedUrl = url; // 供 hls.js 失败时回退原生播放用
+    // 源级请求头按源登记；本次载入之后该源的清单/分片请求都会自动带上。
+    rememberHeaders(rawUrl, this.current && this.current.channel && this.current.channel.headers);
     this._triedNativeFallback = false; // 每次载入重置回退标记
     this._netRetries = 0; // 本次载入的连续网络/解码错误重试计数（超上限则报错）
-    this._mediaRetries = 0;
-    this._loadedBytes = 0; // 本次载入已下载字节数（网速显示用），换台归零
+    this._mediaRetries = 0;    this._loadedBytes = 0; // 本次载入已下载字节数（网速显示用），换台归零
     const isHls = /\.m3u8(\?|$)/i.test(rawUrl);
     // 自动档默认走 hls.js（缓冲更厚、抗抖动更好）；只有确定 hls.js 走不通的地址
     // （历史回退过 / MSE 解不了 HEVC，见 _looksHevc）才直接交原生，省一轮黑屏等待。
@@ -630,6 +673,11 @@ export class Player {
       this._createHls(url);
     } else {
       this._warmNote('v');
+      // 原生管线是 <video src>，请求由系统网络栈发出，JS 改不了头。
+      // 依赖 Referer/UA 的源只能走 hls.js；这里留一行日志，免得排查时以为头生效了。
+      if (headersFor(rawUrl)) {
+        try { console.log('[hdr] native path ignores headers: ' + rawUrl); } catch (e) {}
+      }
       this._startNative(url);
     }
   }
@@ -638,6 +686,7 @@ export class Player {
     const now = Date.now();
     const t0 = this._phase ? this._phase.t0 : now;
     this._destroyHls();
+    this._playedOnce = false; // 原生管线换了一条流：要等它自己出画面，上一条流的 playing 不算数
     // 原生管线的 playbackRate 在 webOS 上写了不生效，倍速只能放弃
     if (this.mode === 'catchup' && this.rate !== 1) this._dropRate('native');
     this._activePath = 'native';
@@ -673,6 +722,9 @@ export class Player {
     // 它默认一挂上媒体元素就按「直播边缘 − liveSyncDuration」起播，那个位置是它算的，
     // 未必是我们缓存里有的那一片；改成等清单解析完、看清缓存内容再 startLoad(位置)。
     cfg.autoStartLoad = false;
+    // 清单、分片、密钥、子清单都走这个加载器，所以一个 xhrSetup 覆盖全部请求。
+    // 闭包按 URL 现查登记表，复用同一个 Hls 实例换台时也能取到新源的头。
+    cfg.xhrSetup = (xhr, u) => applyHeaders(xhr, u);
     const hls = new Hls(cfg);
     this.hls = hls;
     // 预热缓存或并行分段下载开着时才接管分片加载：两个都关就是原生行为，
@@ -746,8 +798,6 @@ export class Player {
         if (data.details && /codec/i.test(data.details)) {
           // hls.js 经 MSE 无法解码该编码（多为 4K H.265/HEVC）→ 回退电视原生硬件解码
           if (this._canNativeHls() && this._fallbackToNative('codec')) return;
-          // 已回退过（可能由 video error 先触发）→ 不重复弹错
-          if (this._triedNativeFallback) { this._destroyHls(); return; }
           fail(t('perr.hevcUnsupported'));
           return;
         }
@@ -956,6 +1006,54 @@ export class Player {
     }
   }
 
+  // 原生管线（4K/HEVC 常走这条路）没有 hls.js 的 recoverMediaError：
+  // 源端丢包、脏 TS 包或瞬断都会直接抛 MEDIA_ERR_DECODE，没有缓冲让你熬过去。
+  // 播放途中出这种错，先重载同一地址——会重新拉清单拿到直播边缘（带签名的源还能换到新签名），
+  // 连续失败才把错误交回上层去切备用源/提示。回看不走这条：重载会从节目开头重新拉，进度全丢。
+  // 起播就没出过画面的错误也不重试，那是格式/地址问题，直接让上层切源更快。
+  _retryNativeMediaError(err) {
+    if (this.mode !== 'live' || !this._playedOnce) return false;
+    const code = err && err.code;
+    if (code !== 2 && code !== 3) return false; // 1=aborted、4=格式不支持，重试无意义
+    const url = this._proxiedUrl || this._rawUrl;
+    if (!url) return false;
+    const now = Date.now();
+    if (now - this._nativeErrAt > CFG.nativeRetry.windowMs) this._nativeRetries = 0;
+    this._nativeErrAt = now;
+    if (this._nativeRetries >= CFG.nativeRetry.max) return false;
+    const n = ++this._nativeRetries;
+    console.log('[native] error ' + code + ' after playback, reload ' + n + '/' + CFG.nativeRetry.max);
+    if (this.onStateChange) this.onStateChange('nativereconnect');
+    clearTimeout(this._nativeReloadTimer);
+    this._nativeReloadTimer = setTimeout(() => {
+      this._nativeReloadTimer = null;
+      if (!this.current || this._activePath !== 'native') return;
+      this._startup = null; // 上一轮起播观察已按 error 结束，重载要重新观察
+      this._startNative(url, 'reconnect');
+    }, CFG.nativeRetry.delayMs * n);
+    return true;
+  }
+
+  _nativeStartupFailed() {
+    if (this.mode !== 'live' || this._activePath !== 'native' || this._decoder !== 'auto' ||
+        this._playedOnce || this._triedNativeFallback || !/\.m3u8(\?|$)/i.test(this._rawUrl || '') ||
+        !Hls.isSupported()) return false;
+    // 两个方向共用回退标记，禁止原生 → hls.js → 原生循环。
+    this._triedNativeFallback = true;
+    if (this._nativeUrls) this._nativeUrls.delete(this._rawUrl);
+    this._abortWarm(null);
+    this._destroyHls();
+    this._phase = { t0: Date.now() };
+    this._playedOnce = false;
+    this._activePath = 'hls';
+    this._resetMediaInfo();
+    this.video.removeAttribute('src');
+    this.video.load();
+    if (this.onStateChange) this.onStateChange('hlsfallback');
+    this._createHls(this._proxiedUrl || this._rawUrl);
+    return true;
+  }
+
   // hls.js 载入失败/编码不支持时回退到电视原生硬件解码（同一地址重播一次）。
   // 每次 _load 只回退一次，避免死循环。返回是否执行了回退。
   _fallbackToNative(reason = 'media') {
@@ -1047,7 +1145,10 @@ export class Player {
   }
 
   // 登记邻台；缓冲安全后才按登记顺序取最新清单，直播期间限频续热。
-  prefetch(rawUrl, refresh = false) {
+  // headers 是该邻台自己的源级请求头（主调方从 channel.headers 取），
+  // 不传则沿用该源已有的登记——邻台与本台同源时不必重复登记。
+  prefetch(rawUrl, refresh = false, headers = null) {
+    rememberHeaders(rawUrl, headers);
     if (!this._warmEnabled()) {
       this._abortWarm(null);
       return Promise.resolve();
@@ -1116,7 +1217,11 @@ export class Player {
     entry.promise = Promise.resolve()
       .then(async () => {
         if (!this._warmEnabled() || generation !== this._warmGeneration) return;
-        const response = await fetch(proxied(url), { cache: 'no-store', signal: ctl.signal });
+        const response = await fetch(proxied(url), {
+          cache: 'no-store',
+          signal: ctl.signal,
+          headers: withHeaders(url)
+        });
         if (!this._warmEnabled() || ctl.signal.aborted || !response || response.ok === false) {
           cancelWarmBody(response && response.body);
           throw new Error('manifest unavailable');
@@ -1583,7 +1688,10 @@ export class Player {
 
   async _warmWhole(job, ctl, cap) {
     checkWarmAbort(ctl, this._warmEnabled());
-    const res = await fetch(job.url, ctl ? { signal: ctl.signal } : undefined);
+    const res = await fetch(job.url, {
+      signal: ctl ? ctl.signal : undefined,
+      headers: withHeaders(job.url)
+    });
     const enabled = this._warmEnabled();
     if (!enabled || (ctl && ctl.signal.aborted)) {
       cancelWarmBody(res && res.body);
@@ -1837,6 +1945,8 @@ export class Player {
     this._abortWarm(null);
     this._resetRate();
     this._destroyHls();
+    clearTimeout(this._nativeReloadTimer);
+    this._nativeReloadTimer = null;
     // 清掉当前流的记录：外部靠 player.current 判断「这一路是否还在播」，
     // 停了还留着会让「重播同一个频道」被当成无需动作而短路掉。
     this.current = null;

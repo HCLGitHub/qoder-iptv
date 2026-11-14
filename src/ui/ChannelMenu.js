@@ -3,7 +3,7 @@ import { KEY } from '../core/keys.js';
 import { epgStore } from '../core/epgStore.js';
 import { isCatchupAvailable } from '../core/catchup.js';
 import { isFavorite, favVersion } from '../core/storage.js';
-import { fmtTime, fmtDayLabel, esc, logoHtml } from '../core/util.js';
+import { fmtTime, fmtDayLabel, esc, logoHtml, isLogoFailed, markLogoFailed } from '../core/util.js';
 import { t, getLang, groupLabel } from '../core/i18n.js';
 
 // 日期范围：当日前 7 天 .. 今天 .. 后 4 天
@@ -15,6 +15,10 @@ const TODAY_POS = DAY_OFFSETS.indexOf(0);
 // 窗口外用 padding 占位，只真实渲染视口附近若干行——几万个频道也能秒开。
 const CHAN_ROW_H = 100;
 const CHAN_OVERSCAN = 5;
+
+// 焦点分组名放不下时的跑马灯：滚动速度（设计画布 px/秒）与首尾停顿（毫秒）
+const GROUP_MARQUEE_SPEED = 80;
+const GROUP_MARQUEE_HOLD = 1200;
 
 // 列索引：0=分组 1=频道 2=日期 3=节目单
 const COL_GROUP = 0;
@@ -199,38 +203,76 @@ export class ChannelMenu {
         <div class="cm-list" id="cm-epg-list"></div>
       </div>`;
     this._skeletonLang = getLang();
+    this._groupHtml = null;
     this._chanSig = null; // 骨架重建后频道列需强制重绘
     this._chanArr = null;
     this._paintedFoc = null;
     this._winStart = 0;
     this._winEnd = 0;
     // 鼠标滚轮/惯性滚动：rAF 合帧后按滚动位置平移窗口（rAF 在骨架重建后随新元素重挂）
-    this.el.querySelector('#cm-chan-list').addEventListener('scroll', () => this._onChanScroll(), { passive: true });
+    const chanList = this.el.querySelector('#cm-chan-list');
+    chanList.addEventListener('scroll', () => this._onChanScroll(), { passive: true });
+    // 台标图挂了（error 不冒泡，用捕获）：记下来避免重复请求，再看整列还要不要留
+    chanList.addEventListener('error', (e) => {
+      const img = e.target;
+      if (!img || img.tagName !== 'IMG') return;
+      markLogoFailed(img.getAttribute('src'));
+      this._applyLogoColumn();
+    }, true);
   }
 
   _renderGroups() {
     const listEl = this.el.querySelector('#cm-group-list');
     if (listEl) {
-      listEl.innerHTML = this.groups
+      const html = this.groups
         .map((grp, i) => {
           const cls =
             'cm-group-item' +
             (i === this.groupIdx ? ' active' : '') +
             (this.col === COL_GROUP && !this.settingsFocused && i === this.groupIdx ? ' focused' : '');
-          return `<div class="${cls}" data-role="group" data-idx="${i}"><span>${esc(groupLabel(grp.name))}</span><span class="badge">${grp.channels.length}</span></div>`;
+          return `<div class="${cls}" data-role="group" data-idx="${i}"><span class="cm-gname"><span>${esc(groupLabel(grp.name))}</span></span><span class="badge">${grp.channels.length}</span></div>`;
         })
         .join('');
+      // 内容没变就不重建：EPG 到达等重渲染不能把正在滚动的分组名打回开头
+      if (html !== this._groupHtml) {
+        this._groupHtml = html;
+        listEl.innerHTML = html;
+        this._marqueeGroup(listEl);
+      }
     }
     const setEl = this.el.querySelector('#cm-settings');
     if (setEl) setEl.classList.toggle('focused', this.col === COL_GROUP && this.settingsFocused);
   }
 
+  _marqueeGroup(listEl) {
+    const box = listEl.querySelector('.cm-group-item.focused .cm-gname');
+    const text = box && box.firstElementChild;
+    if (!text || !text.animate) return;
+    const over = box.scrollWidth - box.clientWidth;
+    if (over <= 2) return;
+    box.classList.add('marquee');
+    const total = GROUP_MARQUEE_HOLD * 2 + (over / GROUP_MARQUEE_SPEED) * 1000;
+    const hold = GROUP_MARQUEE_HOLD / total;
+    const end = 'translateX(' + -over + 'px)';
+    text.animate([
+      { transform: 'translateX(0)', offset: 0 },
+      { transform: 'translateX(0)', offset: hold },
+      { transform: end, offset: 1 - hold },
+      { transform: end, offset: 1 }
+    ], { duration: total, iterations: Infinity });
+  }
+
   // 频道列（含 logo）：窗口化渲染——只画视口附近的行，几千个台的分组不再一次建几万个节点。
   // 内容签名不变则只更新焦点态，不重建 DOM；签名变了也只重建当前窗口段，logo 原样保留。
   _renderChannels() {
-    const chans = this._curGroup().channels;
+    const grp = this._curGroup();
+    const chans = grp.channels;
     const titleEl = this.el.querySelector('#cm-chan-title');
-    if (titleEl) titleEl.innerHTML = t('cm.channels', { n: chans.length });
+    if (titleEl) {
+      titleEl.textContent = grp.name
+        ? t('cm.groupChannels', { n: chans.length, g: groupLabel(grp.name) })
+        : t('cm.channels', { n: chans.length });
+    }
     const listEl = this.el.querySelector('#cm-chan-list');
     if (!listEl) return;
 
@@ -253,6 +295,19 @@ export class ChannelMenu {
       this._ensureChanWindow(listEl); // 焦点越出视口则平移窗口重绘
       this._updateChanFocus(listEl); // 窗口没动就只切焦点：logo 原样保留
     }
+    this._applyLogoColumn();
+  }
+
+  // 台标列：可见窗口里一个能显示的台标都没有时收起，让频道名多露几个字。
+  // 「能显示」= 配了地址且没在失败表里——地址都在但整组图挂掉时也收起。
+  _applyLogoColumn() {
+    const listEl = this.el.querySelector('#cm-chan-list');
+    const chans = this._chanArr;
+    if (!listEl || !chans) return;
+    const shown = chans
+      .slice(this._winStart, this._winEnd)
+      .some((c) => c.logo && !isLogoFailed(c.logo));
+    listEl.classList.toggle('no-logo', !shown);
   }
 
   // 频道列视口能容纳的行数（向上取整，含压边的半行）

@@ -71,8 +71,7 @@ test('仅当前载入的自动播放权限拒绝才静音重试', async (t) => {
   assert.equal(video.muted, true);
 });
 
-test('换台、原生回退或停止后，旧 play Promise 不得重试', async (t) => {
-  const { player, video } = fixture(t);
+test('换台、原生回退或停止后，旧 play Promise 不得重试', async (t) => {  const { player, video } = fixture(t);
   for (const change of [
     () => { player._phase = { t0: Date.now() }; },
     () => { player._activePath = 'native'; },
@@ -90,6 +89,50 @@ test('换台、原生回退或停止后，旧 play Promise 不得重试', async 
     assert.equal(calls, 1);
     assert.equal(video.muted, false);
   }
+});
+
+test('原生播放途中解码出错先重载两次再报错', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  const { player, video } = fixture(t);
+  player._activePath = 'native';
+  player._proxiedUrl = player.current.url;
+  player._playedOnce = true;
+  let reloads = 0;
+  let errors = 0;
+  player._startNative = () => { reloads++; };
+  player.onError = () => { errors++; };
+  video.error = { code: 3 };
+  video.emit('error');
+  assert.equal(errors, 0, '第一次错误应静默重连');
+  t.mock.timers.tick(1200);
+  assert.equal(reloads, 1);
+  video.emit('error');
+  t.mock.timers.tick(2400);
+  assert.equal(reloads, 2);
+  video.emit('error');
+  assert.equal(reloads, 2, '重载次数有上限');
+  assert.equal(errors, 1, '重试用完才把错误交给上层');
+  video.error = null;
+});
+
+test('原生起播即失败、回看出错都不走重载', (t) => {
+  const { player, video } = fixture(t);
+  player._activePath = 'native';
+  player._proxiedUrl = player.current.url;
+  let reloads = 0;
+  let errors = 0;
+  player._startNative = () => { reloads++; };
+  player.onError = () => { errors++; };
+  video.error = { code: 3 };
+  video.emit('error');
+  assert.equal(reloads, 0, '没出过画面：重载救不了格式问题');
+  assert.equal(errors, 1);
+  player.mode = 'catchup';
+  player._playedOnce = true;
+  video.emit('error');
+  assert.equal(reloads, 0, '回看重载会丢进度');
+  assert.equal(errors, 2);
+  video.error = null;
 });
 
 function clock(t) {
@@ -603,6 +646,7 @@ test('原生首个playing保持起播遮罩，真实推进后才结束；HLS仍�
     zapStartAt: 1000,
     stallTimer: null,
     netSpeed: { setStartupMs: (...args) => startup.push(args) },
+    rememberPlayingSource() {},
     loading: value => shown.push(value),
     endLoading: () => { sandbox.zapStarting = false; shown.push(false); },
     setTimeout() { assert.fail('起播阶段不能启动播放中waiting防抖'); }
@@ -628,4 +672,264 @@ test('原生首个playing保持起播遮罩，真实推进后才结束；HLS仍�
   context.player.onStateChange('playing');
   assert.equal(context.zapStarting, false);
   assert.equal(startup.length, 2);
+});
+
+function nativeAutoFixture(t) {
+  const f = nativeFixture(t);
+  for (const name of ['self', 'window']) {
+    const old = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, value: globalThis });
+    t.after(() => old ? Object.defineProperty(globalThis, name, old) : delete globalThis[name]);
+  }
+  t.mock.method(Hls, 'isSupported', () => true);
+  t.mock.method(Hls.prototype, 'attachMedia', () => {});
+  t.mock.method(Hls.prototype, 'loadSource', () => {});
+  f.player._decoder = 'auto';
+  f.player._proxiedUrl = f.player._rawUrl;
+  f.video.removeAttribute = () => { f.video.src = ''; };
+  f.video.load = () => { f.video.currentTime = 0; f.video.readyState = 0; f.video.error = null; };
+  return f;
+}
+
+for (const readyState of [0, 4]) {
+  test(`自动档原生R${readyState}无推进超时只尝试一次hls.js`, (t) => {
+    const tick = clock(t);
+    const { player, video } = nativeAutoFixture(t);
+    const states = [];
+    const errors = [];
+    player.onStateChange = state => states.push(state);
+    player.onError = message => errors.push(message);
+    player._nativeUrls = new Set([player._rawUrl]);
+    player._watchStartup();
+    video.readyState = readyState;
+    video.emit('playing');
+    assert.equal(player._playedOnce, false, '静止首帧不能冒充播放成功');
+    tick(9800);
+    assert.equal(player.activePath(), 'native');
+    tick(200);
+    assert.equal(player.activePath(), 'hls');
+    assert.ok(player.hls);
+    assert.equal(player._triedNativeFallback, true);
+    assert.equal(player._nativeUrls.has(player._rawUrl), false);
+    assert.equal(player._phase.t0, 110000, '新管线需要独立起播观察期限');
+    assert.equal(player._startupTimer, null);
+    assert.equal(video.error, null);
+    assert.equal(errors.length, 0);
+    assert.equal(states.at(-1), 'hlsfallback');
+    assert.equal(player._nativeStartupFailed(), false);
+    assert.equal(player._fallbackToNative('codec'), false);
+  });
+}
+
+for (const code of [2, 3, 4]) {
+  test(`自动档原生首播错误${code}可试hls.js且清除旧媒体错误`, (t) => {
+    clock(t);
+    const { player, video } = nativeAutoFixture(t);
+    const errors = [];
+    player.onError = message => errors.push(message);
+    player._watchStartup();
+    video.error = { code };
+    video.emit('error');
+    assert.equal(player.activePath(), 'hls');
+    assert.ok(player.hls);
+    assert.equal(video.error, null);
+    assert.equal(errors.length, 0);
+    assert.equal(player._nativeReloadTimer, null);
+  });
+}
+
+for (const [name, configure] of [
+  ['显式原生档', p => { p._decoder = 'native'; }],
+  ['已从hls.js回退', p => { p._triedNativeFallback = true; }],
+  ['非HLS流', p => { p._rawUrl = 'https://example.test/live.ts'; }],
+  ['MSE不可用', () => { Hls.isSupported = () => false; }]
+]) {
+  test(`${name}原生超时仅报错一次，不切解码器`, (t) => {
+    const tick = clock(t);
+    const { player, video } = nativeAutoFixture(t);
+    configure(player);
+    const errors = [];
+    player.onError = message => errors.push(message);
+    player._watchStartup();
+    tick(10000);
+    assert.equal(player.activePath(), 'native');
+    assert.equal(player.hls, null);
+    assert.equal(player.startupStatus().reason, 'timeout');
+    assert.equal(player._startupTimer, null);
+    assert.equal(video.paused, true);
+    assert.equal(errors.length, 1);
+    tick(10000);
+    assert.equal(errors.length, 1);
+  });
+}
+
+test('原生重连无数据超时交给上层，不继续静默等待', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  player._triedNativeFallback = true;
+  player._startNative(player._rawUrl, 'reconnect');
+  const errors = [];
+  player.onError = message => errors.push(message);
+  tick(10000);
+  assert.equal(errors.length, 1);
+  assert.equal(player.startupStatus().reason, 'timeout');
+  assert.equal(video.paused, true);
+});
+
+test('回看原生超时不切hls.js或重置节目位置', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  player.mode = 'catchup';
+  const errors = [];
+  player.onError = message => errors.push(message);
+  player._watchStartup();
+  tick(10000);
+  assert.equal(player.activePath(), 'native');
+  assert.equal(video.currentTime, 10);
+  assert.equal(errors.length, 0);
+});
+
+test('原生在超时采样同时已有真实推进时应判为成功', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  const errors = [];
+  player.onError = message => errors.push(message);
+  player._watchStartup();
+  tick(9800);
+  video.currentTime = 10.2;
+  tick(200);
+  assert.equal(player.activePath(), 'native');
+  assert.equal(player._playedOnce, true);
+  assert.equal(player.startupStatus().reason, 'moving');
+  assert.equal(errors.length, 0);
+});
+
+test('原生反向兜底后hls.js致命编码错误仍必须报告，不再静默吞错', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  const originalOn = Hls.prototype.on;
+  let errorHandler;
+  t.mock.method(Hls.prototype, 'on', function(event, callback, context) {
+    if (event === Hls.Events.ERROR && context === undefined) errorHandler = callback;
+    return originalOn.call(this, event, callback, context);
+  });
+  const errors = [];
+  player.onError = message => errors.push(message);
+  video.canPlayType = () => 'probably';
+  player._watchStartup();
+  tick(10000);
+  assert.equal(player.activePath(), 'hls');
+  errorHandler(null, { fatal: true, type: Hls.ErrorTypes.MEDIA_ERROR, details: 'bufferAddCodecError' });
+  assert.equal(errors.length, 1);
+  assert.equal(player.hls, null);
+  assert.equal(player.activePath(), 'hls', '不能再踢回原生');
+  errorHandler(null, { fatal: true, details: 'bufferAddCodecError' });
+  assert.equal(errors.length, 1, '销毁后的迟到HLS回调应被忽略');
+});
+
+test('原生失败通知上层切备用源后，旧观察器不影响新频道', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  player._decoder = 'native';
+  player.onError = () => player.playLive({ name: 'Backup', url: 'https://example.test/backup.m3u8' }, 'native');
+  player._watchStartup();
+  tick(10000);
+  assert.equal(player.current.channel.name, 'Backup');
+  assert.equal(player._startup.done, false);
+  video.paused = false;
+  video.currentTime = 0.2;
+  tick(200);
+  assert.equal(player.startupStatus().reason, 'moving');
+  assert.equal(player._startupTimer, null);
+});
+
+test('原生反向兜底重新给HLS看门狗完整期限且保留总起播耗时', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const a = source.indexOf('function beginLoading(');
+  const b = source.indexOf('function endLoading()', a);
+  const c = source.indexOf('player.onStateChange =');
+  const d = source.indexOf('\n};', c) + 3;
+  let deadline;
+  const context = vm.createContext({
+    player: {}, zapStarting: true, zapStartAt: 1000, startWatchdog: 5, stallTimer: 6,
+    START_TIMEOUT_MS: 12000, onStartTimeout() {}, netSpeed: { reset() {} },
+    loading() {}, clearTimeout() {},
+    setTimeout: (fn, ms) => { deadline = ms; return 7; }
+  });
+  vm.runInContext(source.slice(a, b) + '\n' + source.slice(c, d), context);
+  context.player.onStateChange('hlsfallback');
+  assert.equal(context.zapStartAt, 1000);
+  assert.equal(context.zapStarting, true);
+  assert.equal(context.startWatchdog, 7);
+  assert.equal(deadline, 12000);
+});
+
+test('原生首帧后主动暂停不触发失败，恢复后仍有未耗完的等待时间', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  const errors = [];
+  player._decoder = 'native';
+  player.onError = message => errors.push(message);
+  player._watchStartup();
+  tick(2000);
+  video.paused = true;
+  tick(20000);
+  assert.equal(player._startup.done, false);
+  assert.equal(errors.length, 0);
+  video.paused = false;
+  tick(7800);
+  assert.equal(errors.length, 0);
+  tick(200);
+  assert.equal(errors.length, 1);
+});
+
+test('原生超时后的迟到error和waiting不重复提示或重开转圈', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  const errors = [];
+  const states = [];
+  player._decoder = 'native';
+  player.onError = message => errors.push(message);
+  player.onStateChange = state => states.push(state);
+  player._watchStartup();
+  tick(10000);
+  video.error = { code: 4 };
+  video.emit('error');
+  video.emit('waiting');
+  assert.equal(errors.length, 1);
+  assert.deepEqual(states, []);
+});
+
+test('原生无数据且play失败保持paused也必须超时报错', (t) => {
+  const tick = clock(t);
+  const { player, video } = nativeAutoFixture(t);
+  player._decoder = 'native';
+  video.readyState = 0;
+  video.paused = true;
+  const errors = [];
+  player.onError = message => errors.push(message);
+  player._watchStartup();
+  tick(10000);
+  assert.equal(errors.length, 1);
+});
+
+test('上层看门狗不把已就绪媒体的暂停误判为坏源，但无数据仍报错', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const a = source.indexOf('function onStartTimeout()');
+  const b = source.indexOf('\n}', a) + 2;
+  let attempts = 0;
+  const context = vm.createContext({
+    player: { video: { paused: true, readyState: 4, error: null } },
+    startWatchdog: null, START_TIMEOUT_MS: 12000, zapStarting: true, stallTimer: null,
+    setTimeout: () => 7, clearTimeout() {}, loading() {}, toast() {}, t: key => key,
+    tryFailover() { attempts++; return false; }
+  });
+  vm.runInContext(source.slice(a, b), context);
+  context.onStartTimeout();
+  assert.equal(attempts, 0);
+  assert.equal(context.startWatchdog, 7);
+  context.player.video.readyState = 0;
+  context.onStartTimeout();
+  assert.equal(attempts, 1);
+  assert.equal(context.zapStarting, false);
 });

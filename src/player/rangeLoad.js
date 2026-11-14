@@ -30,6 +30,8 @@
 // 而 IPTV 网关基本不应答预检。但 webOS 应用没有同源限制（真机无 CORS 问题），
 // 开发环境走 net.js 的同源代理，两边都不受影响。
 
+import { withHeaders } from '../core/reqHeaders.js';
+
 // 整片小于这个就不拆：省下来的时间还不够几个 RTT 的固定开销。
 const MIN_TOTAL = 512 * 1024;
 // 每段的最小尺寸，用来反推实际路数——段切太碎同样是拿 RTT 换带宽，不划算。
@@ -103,7 +105,7 @@ function checkAbort(signal) {
 async function fetchRange(url, ctl, start, end) {
   checkAbort(ctl.signal);
   const response = await fetch(url, {
-    headers: { Range: 'bytes=' + start + '-' + end },
+    headers: withHeaders(url, { Range: 'bytes=' + start + '-' + end }),
     signal: ctl.signal,
     cache: 'no-store'
   });
