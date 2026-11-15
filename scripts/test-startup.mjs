@@ -135,6 +135,53 @@ test('原生起播即失败、回看出错都不走重载', (t) => {
   video.error = null;
 });
 
+test('4K/HEVC 原生解码出错不原地重载，并记住这条地址', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  const { player, video } = fixture(t);
+  player._activePath = 'native';
+  player._proxiedUrl = player.current.url;
+  player._playedOnce = true;
+  player.current.channel.name = 'CCTV-4K';
+  let reloads = 0;
+  let errors = 0;
+  player._startNative = () => { reloads++; };
+  player.onError = () => { errors++; };
+  video.error = { code: 3 };
+  video.emit('error');
+  t.mock.timers.tick(5000);
+  assert.equal(reloads, 0, '4K 坏流不再重起解码管线');
+  assert.equal(errors, 1);
+  assert.equal(player._nativeBad.has(player.current.url), true);
+  assert.equal(player._nativeAllowed(player.current.url), false, '这条地址本场不再交原生');
+  video.error = null;
+});
+
+test('原生解码连续两次彻底失败后本场熔断并只提示一次', (t) => {
+  const { player, video } = fixture(t);
+  player._activePath = 'native';
+  player._proxiedUrl = player.current.url;
+  player._playedOnce = true;
+  player.current.channel.name = 'CCTV-4K';
+  let notices = 0;
+  player.onNotice = () => { notices++; };
+  player.onError = () => {};
+  video.error = { code: 3 };
+  video.emit('error');
+  assert.equal(player._nativeOff, false, '一次失败还不够熔断');
+  assert.equal(notices, 0);
+  video.emit('error');
+  assert.equal(player._nativeOff, true);
+  assert.equal(notices, 1);
+  video.emit('error');
+  assert.equal(notices, 1, '提示只发一次');
+  player._decoder = 'native';
+  player._triedNativeFallback = false;
+  assert.equal(player._fallbackToNative('media'), false, '熔断后不再回退原生');
+  assert.equal(player._willUseNative('https://example.test/other.m3u8'), false);
+  assert.equal(player._looksHevc('https://example.test/other.m3u8'), false);
+  video.error = null;
+});
+
 function clock(t) {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100000 });
   return (ms) => t.mock.timers.tick(ms);

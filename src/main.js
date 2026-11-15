@@ -671,6 +671,9 @@ player.onError = (msg) => {
   toast(msg, 4000);
 };
 
+// 非错误提示：原生解码熔断后只降级不报错，提示一次让用户知道画质可能变差
+player.onNotice = (msg) => toast(msg, 4000);
+
 // 回看倍速走不通（换档被拒或引擎中途失败）：播放器已回 1×，这里提示原因并刷新控制条
 player.onRateFail = (reason) => {
   toast(t('cb.speedFail', { reason: t('rate.' + reason) }), 4000);

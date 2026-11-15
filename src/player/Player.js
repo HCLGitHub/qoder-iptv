@@ -36,6 +36,10 @@ const CFG = {
     delayMs: 1200, // 第 n 次等 delayMs × n，给源端一点回神时间
     windowMs: 30000 // 距上次出错超过这个时长算新问题，重新计数
   },
+  // 原生解码彻底失败的次数达到这个值，本场会话整体禁用原生。
+  // 每次原生失败都意味着电视重新起一条硬件解码管线（GStreamer + VMCU 固件），
+  // 坏流会把 VMCU 打成 kernel panic，连 VO/HDMI 输出一起黑屏（实测 LG G5）。
+  nativeBreaker: 2,
   nativeCacheMax: 128, // “需原生解码”地址记忆的上限（超量 LRU 淘汰最早的）
   prefetchCacheMax: 48, // 预热去重集合上限（超量 LRU 淘汰最早的）
   startup: {
@@ -236,10 +240,18 @@ export class Player {
     this.onError = null;
     this.onStateChange = null;
     this.onMediaInfo = null; // 分辨率/编码信息变化（OSD 画质标签用）
+    this.onNotice = null; // 非错误提示（如原生解码熔断后的降级通知）
     this._warmHold = true;
     this._nativeRetries = 0;
     this._nativeErrAt = 0;
     this._nativeReloadTimer = null;
+    // 原生解码失败记账（会话级，不落盘）：
+    //   _nativeBad   —— 这些地址在原生管线上解码失败过，本场不再交给原生
+    //   _nativeFails —— 彻底失败的次数，到 CFG.nativeBreaker 就整体禁用原生
+    // 坏流反复重启电视解码器会把视频输出通路（VO/HDMI）一起带走，见 _nativeMarkBad。
+    this._nativeBad = new Set();
+    this._nativeFails = 0;
+    this._nativeOff = false;
     this._playedOnce = false;
     this._warmPlaying = false;
     this._warmGeneration = 0; // 换台/停止后，旧清单响应不得重新排入预热
@@ -277,7 +289,11 @@ export class Player {
       // 原生管线播放途中被脏包/断流打断：先重载同一地址接回直播边缘，别直接切源
       if (this._activePath === 'native') {
         if (!this._playedOnce && this._nativeStartupFailed()) return;
-        if (this._retryNativeMediaError(this.video.error)) return;
+        const err = this.video.error;
+        const decoded = err && err.code === 3; // 解码错误：坏流，VMCU panic 的来源
+        if (decoded) this._nativeMarkBad();
+        if (this._retryNativeMediaError(err)) return;
+        if (decoded) this._nativeCountFail(); // 重试用完/不能重试：记一次彻底失败
       }
       if (this.hls && !this._triedNativeFallback && this._canNativeHls()) {
         if (this._fallbackToNative('media')) return;
@@ -632,11 +648,15 @@ export class Player {
     this._netRetries = 0; // 本次载入的连续网络/解码错误重试计数（超上限则报错）
     this._mediaRetries = 0;    this._loadedBytes = 0; // 本次载入已下载字节数（网速显示用），换台归零
     const isHls = /\.m3u8(\?|$)/i.test(rawUrl);
+    // 原生被熔断、或这条地址原生解坏过：不再交给电视解码器。
+    // 即使档位选了原生，m3u8 也改走 hls.js（MSE 解不了就报错换源，别拿电视的视频通路冒险）。
+    const nativeBlocked = !this._nativeAllowed(rawUrl);
     // 自动档默认走 hls.js（缓冲更厚、抗抖动更好）；只有确定 hls.js 走不通的地址
     // （历史回退过 / MSE 解不了 HEVC，见 _looksHevc）才直接交原生，省一轮黑屏等待。
     const preferNative =
-      decoder === 'auto' && this._canNativeHls() && this._looksHevc(rawUrl);
-    const useHlsJs = isHls && decoder !== 'native' && !preferNative && Hls.isSupported();
+      !nativeBlocked && decoder === 'auto' && this._canNativeHls() && this._looksHevc(rawUrl);
+    const useHlsJs = isHls && Hls.isSupported() &&
+      (decoder !== 'native' || nativeBlocked) && !preferNative;
     // 在途的后台预热让位给这次换台。
     // 「要切过去的那个台」只在走 hls.js 时才值得留着：它的片能喂进分片加载器
     // （见 fragCache 的 pending）。走原生的话那片谁也用不上，留着只是继续占着
@@ -1006,15 +1026,58 @@ export class Player {
     }
   }
 
+  // 这个地址还允许交给电视原生解码吗？原生出错过的地址、或熔断已打开都返回 false。
+  // 坏流每重起一次解码管线，VMCU 固件就多一次 panic 的机会（见 _nativeMarkBad）。
+  _nativeAllowed(url = this._rawUrl || this._proxiedUrl) {
+    if (this._nativeOff) return false;
+    return !(url && this._nativeBad && this._nativeBad.has(url));
+  }
+
+  // 记住「这个地址在原生管线上解码失败过」，本场不再交给原生。
+  // 同时从 _nativeUrls（需原生记忆）里删掉，免得以后又把坏地址推回原生。
+  _nativeMarkBad(url = this._rawUrl || this._proxiedUrl) {
+    if (!url) return;
+    if (!this._nativeBad) this._nativeBad = new Set();
+    boundedAdd(this._nativeBad, url, CFG.nativeCacheMax);
+    if (this._nativeUrls) this._nativeUrls.delete(url);
+  }
+
+  // 原生解码彻底失败（重试用完 / 不能重试）记一次账；到 CFG.nativeBreaker 整体关掉原生，
+  // 只提示一次。计数是会话级的：重启应用才重新给原生机会。
+  _nativeCountFail() {
+    if (this._nativeOff) return;
+    this._nativeFails++;
+    console.log('[native] decode failed ' + this._nativeFails + '/' + CFG.nativeBreaker);
+    if (this._nativeFails < CFG.nativeBreaker) return;
+    this._nativeOff = true;
+    console.log('[native] disabled for this session');
+    if (this._nativeUrls) this._nativeUrls.clear();
+    if (this.onNotice) this.onNotice(t('toast.nativeOff'));
+  }
+
+  // 4K/HEVC 这类高码率流：原生解码出错后不再原地重载。
+  // 同一个坏流每多起一次解码管线，就多一次把 VMCU 打成 kernel panic 的机会。
+  _isHeavyStream() {
+    const info = this.mediaInfo || {};
+    if (/hvc1|hev1|h\.?265|hevc/i.test(String(info.videoCodec || ''))) return true;
+    if ((info.height || 0) >= 2000 || (this.video.videoHeight || 0) >= 2000) return true;
+    const name = (this.current && this.current.channel && this.current.channel.name) || '';
+    return /4k|8k|2160|uhd|hevc|h\.?265/i.test(name + ' ' + (this._rawUrl || ''));
+  }
+
   // 原生管线（4K/HEVC 常走这条路）没有 hls.js 的 recoverMediaError：
   // 源端丢包、脏 TS 包或瞬断都会直接抛 MEDIA_ERR_DECODE，没有缓冲让你熬过去。
   // 播放途中出这种错，先重载同一地址——会重新拉清单拿到直播边缘（带签名的源还能换到新签名），
   // 连续失败才把错误交回上层去切备用源/提示。回看不走这条：重载会从节目开头重新拉，进度全丢。
   // 起播就没出过画面的错误也不重试，那是格式/地址问题，直接让上层切源更快。
+  // 4K/HEVC 的解码错误例外：不原地重载，直接换路（见下方判断）。
   _retryNativeMediaError(err) {
     if (this.mode !== 'live' || !this._playedOnce) return false;
     const code = err && err.code;
     if (code !== 2 && code !== 3) return false; // 1=aborted、4=格式不支持，重试无意义
+    // 4K/HEVC 坏流的解码错误不原地重载：每重载一次电视就重起一条硬件解码管线，
+    // 坏流会把 VMCU 固件打成 kernel panic，连 VO/HDMI 输出一起黑掉（LG G5 实测）。
+    if (code === 3 && this._isHeavyStream()) return false;
     const url = this._proxiedUrl || this._rawUrl;
     if (!url) return false;
     const now = Date.now();
@@ -1058,6 +1121,7 @@ export class Player {
   // 每次 _load 只回退一次，避免死循环。返回是否执行了回退。
   _fallbackToNative(reason = 'media') {
     if (this._triedNativeFallback || !this._proxiedUrl) return false;
+    if (!this._nativeAllowed()) return false; // 这条地址原生解坏过/已熔断：别再起解码管线
     this._abortWarm(null);
     this._triedNativeFallback = true;
     if (this._rawUrl) {
@@ -1074,6 +1138,7 @@ export class Player {
   // 不能复用 _looksHevc：它会去看 this.current.channel.name，那是**当前**台的名字，
   // 拿来判断另一个台必然认错对象。
   _willUseNative(rawUrl) {
+    if (!this._nativeAllowed(rawUrl)) return false;
     if (this._decoder === 'native') return true;
     return !!(this._nativeUrls && this._nativeUrls.has(rawUrl));
   }
@@ -1084,6 +1149,7 @@ export class Player {
   // 原生管线对某些 4K 流会播几秒后解码失败，而且它的缓冲比 hls.js 浅得多，
   // 大分片高码率（10s/47MB 这种）下极易周期性卡顿。
   _looksHevc(rawUrl) {
+    if (!this._nativeAllowed(rawUrl)) return false; // 原生已被熔断/这条地址解坏过
     if (this._nativeUrls && this._nativeUrls.has(rawUrl)) return true;
     if (this._mseHevcOk()) return false; // MSE 解得了 → 交 hls.js，缓冲更厚更稳
     const name = (this.current && this.current.channel && this.current.channel.name) || '';

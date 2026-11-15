@@ -190,6 +190,7 @@ const DICT = {
     'toast.online': '网络已恢复，正在重连…',
     'toast.tryingBackup': '正在尝试备用源 {n}/{total}：{label}',
     'toast.channelUnavailable': '该频道暂时无法播放',
+    'toast.nativeOff': '原生解码已暂停，改用兼容模式播放',
 
     // fetch 错误说明
     'err.timeout': '请求超时，服务器没有响应。可能是源站太慢，或电视走了不通的 IPv6 线路',
@@ -532,6 +533,7 @@ const DICT = {
     'toast.online': 'Network restored, reconnecting…',
     'toast.tryingBackup': 'Trying backup source {n}/{total}: {label}',
     'toast.channelUnavailable': 'This channel is currently unavailable',
+    'toast.nativeOff': 'Native decoding paused, switched to compatibility mode',
 
     // fetch errors
     'err.timeout':
